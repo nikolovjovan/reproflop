@@ -1,5 +1,5 @@
 CC		= g++
-CFLAGS	= -std=c++14 -pthread
+CFLAGS	= -std=c++14 -pthread -O2
 SRC		= rng.cpp
 TARGET	= rng
 
