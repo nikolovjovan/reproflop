@@ -227,9 +227,6 @@ void* parallel_sum(void *data)
     pthread_exit(NULL);
 }
 
-// TODO: Shuffle array elements with std::next_permutation or other methods. Also randomly select per-thread element counts (only for repeatability testing, for
-//       performance testing, disable this as it can incurr performance penalty due to differing thread loads). Also shuffle reduction indices for parallel induction.
-
 int main(int argc, char *argv[])
 {
     int opt;
