@@ -1,392 +1,349 @@
-#include <cstdio>
-#include <cstdlib>
+#include <iostream>
+#include <iomanip>
 #include <cstring>
 #include <random>
-#include <unistd.h>
+#include <vector>
+#include <algorithm>
+#include <chrono>
 #include <pthread.h>
 
 using namespace std;
 
-#define EXPONENT_BIAS               (127)
-#define EXPONENT_MIN_VALUE          (-126)
-#define EXPONENT_MAX_VALUE          (127)
+// Floating-point specification constants
 
-#define DEFAULT_THREAD_COUNT        (8)
-#define DEFAULT_ARRAY_SIZE          (1000)
-#define DEFAULT_SEED                (1549813198)
-#define DEFAULT_EXPONENT_MIN_VALUE  (-10)
-#define DEFAULT_EXPONENT_MAX_VALUE  (10)
-#define DEFAULT_REPEAT_COUNT        (100)
+constexpr int EXPONENT_MIN_VALUE = -126;
+constexpr int EXPONENT_MAX_VALUE = 127;
+constexpr int EXPONENT_BIAS = 127;
 
-#define SMALLEST_SUBNORMAL          (0b0'00000000'00000000000000000000001)
-#define LARGEST_SUBNORMAL           (0b0'00000000'11111111111111111111111)
+// Default values
 
-#define SMALLEST_NORMAL             (0b0'00000001'00000000000000000000000)
-#define LARGEST_NORMAL              (0b0'11111110'11111111111111111111111)
+constexpr uint32_t DEFAULT_THREAD_COUNT = 8;
+constexpr uint32_t DEFAULT_ELEMENT_COUNT = 1000;
+constexpr uint32_t DEFAULT_SEED = 1549813198;
+constexpr int DEFAULT_EXPONENT_MIN_VALUE = -10;
+constexpr int DEFAULT_EXPONENT_MAX_VALUE = 10;
+constexpr uint32_t DEFAULT_REPEAT_COUNT = 100;
 
-#define LARGEST_LESS_THAN_ONE       (0b0'01111110'11111111111111111111111)
-#define ONE                         (0b0'01111111'00000000000000000000000)
-#define SMALLEST_LARGER_THAN_ONE    (0b0'01111110'11111111111111111111111)
+// Program parameters
 
-#define MINUS_TWO                   (0b1'10000000'00000000000000000000000)
+uint32_t thread_count   = DEFAULT_THREAD_COUNT;
+uint32_t element_count  = DEFAULT_ELEMENT_COUNT;
+uint32_t seed           = DEFAULT_SEED;
+int exponent_min        = DEFAULT_EXPONENT_MIN_VALUE;
+int exponent_max        = DEFAULT_EXPONENT_MAX_VALUE;
+uint32_t repeat_count   = DEFAULT_REPEAT_COUNT;
+bool print_elements     = false;
 
-#define POSITIVE_ZERO               (0b0'00000000'00000000000000000000000)
-#define NEGATIVE_ZERO               (0b1'00000000'00000000000000000000000)
+// Shared variables
 
-#define POSITIVE_INFINITY           (0b0'11111111'00000000000000000000000)
-#define NEGATIVE_INFINITY           (0b1'11111111'00000000000000000000000)
-
-#define POSITIVE_QNAN               (0b0'11111111'10000000000000000000001)
-#define NEGATIVE_QNAN               (0b1'11111111'10000000000000000000001)
-#define POSITIVE_SNAN               (0b0'11111111'00000000000000000000001)
-#define NEGATIVE_SNAN               (0b1'11111111'00000000000000000000001)
-
-uint32_t thread_count = DEFAULT_THREAD_COUNT;
-uint32_t array_size = DEFAULT_ARRAY_SIZE;
-uint32_t seed = DEFAULT_SEED;
-int exponent_min = DEFAULT_EXPONENT_MIN_VALUE;
-int exponent_max = DEFAULT_EXPONENT_MAX_VALUE;
-uint32_t repeat_count = DEFAULT_REPEAT_COUNT;
-bool print_numbers = false;
-
-float *arr;
+vector<float> *elements;
 uint32_t blk_size;
 float *partial_sums;
-float par_sum;
-bool par_sum_valid;
-pthread_barrier_t bar;
-uint64_t time_par;
+pthread_barrier_t barrier;
+bool result_valid;
 
-uint64_t get_posix_clock_time()
+// Results
+
+float sum_sequential, sum_parallel;
+uint64_t time_sequential, time_parallel;
+
+void print_usage(char program_name[])
 {
-    struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
-        return (uint64_t) (ts.tv_sec * 1000000 + ts.tv_nsec / 1000);
-    } else {
-        return 0;
+    cout << "Usage: " << program_name << " <options>" << endl;
+    cout << "  -t <num>: Uses <num> threads for parallel execution (default value: 8)" << endl;
+    cout << "  -n <num>: Generates <num> random floating-point numbers for analysis (default value: 1000)" << endl;
+    cout << "  -s <num>: Generates the numbers using <num> as seed (default value: 1549813198)" << endl;
+    cout << "  -l <num>: Uses <num> as exponent minimum value (default value: -10)" << endl;
+    cout << "  -h <num>: Uses <num> as exponent maximum value (inclusive) (default value: 10)" << endl;
+    cout << "  -r <num>: Repeats the execution of both implementations <num> times for reproducibility study (default value: 100)" << endl;
+    cout << "  -p: Print generated numbers before analysis" << endl;
+    cout << "  -?: Print this message" << endl;
+}
+
+void parse_parameters(int argc, char *argv[])
+{
+    for (uint32_t i = 1; i < argc; ++i) {
+        uint32_t arglen = strlen(argv[i]);
+        if (arglen < 2 || argv[i][0] != '-') {
+            cout << "Invalid argument: \"" << argv[i] << '"' << endl;
+            print_usage(argv[0]);
+            exit(EXIT_FAILURE);
+        }
+        uint32_t n;
+        switch (argv[i][1]) {
+            case 't':
+                if (i + 1 == argc) {
+                    cout << "Thread count not specified!" << endl;
+                    print_usage(argv[0]);
+                    exit(EXIT_FAILURE);
+                }
+                n = atoi(argv[++i]);
+                if (n < 1) {
+                    cout << "Invalid thread count: " << n << "! Using default value: " << (uint32_t) DEFAULT_THREAD_COUNT << endl;
+                } else {
+                    thread_count = n;
+                }
+                break;
+            case 'n':
+                if (i + 1 == argc) {
+                    cout << "Element count not specified!" << endl;
+                    print_usage(argv[0]);
+                    exit(EXIT_FAILURE);
+                }
+                n = atoi(argv[++i]);
+                if (n < 1) {
+                    cout << "Invalid element count: " << n << "! Using default value: " << (uint32_t) DEFAULT_ELEMENT_COUNT << endl;
+                } else {
+                    element_count = n;
+                }
+                break;
+            case 's':
+                if (i + 1 == argc) {
+                    cout << "Seed not specified!" << endl;
+                    print_usage(argv[0]);
+                    exit(EXIT_FAILURE);
+                }
+                n = atoi(argv[++i]);
+                if (n == 0) {
+                    random_device rd;
+                    seed = rd();
+                    cout << "Special seed value: 0. Generated random seed: " << seed << endl;
+                } else {
+                    seed = n;
+                }
+                break;
+            case 'l':
+                if (i + 1 == argc) {
+                    cout << "Exponent minimum value not specified!" << endl;
+                    print_usage(argv[0]);
+                    exit(EXIT_FAILURE);
+                }
+                n = atoi(argv[++i]);
+                if (n < EXPONENT_MIN_VALUE) {
+                    cout << "Invalid exponent minimum value: " << n << "! Using default value: " << DEFAULT_EXPONENT_MIN_VALUE << endl;
+                } else {
+                    exponent_min = n;
+                }
+                break;
+            case 'h':
+                if (i + 1 == argc) {
+                    cout << "Exponent maximum value not specified!" << endl;
+                    print_usage(argv[0]);
+                    exit(EXIT_FAILURE);
+                }
+                n = atoi(argv[++i]);
+                if (n > EXPONENT_MAX_VALUE) {
+                    cout << "Invalid exponent maximum value: " << n << "! Using default value: " << DEFAULT_EXPONENT_MAX_VALUE << endl;
+                } else {
+                    exponent_max = n;
+                }
+                break;
+            case 'r':
+                if (i + 1 == argc) {
+                    cout << "Repeat count not specified!" << endl;
+                    print_usage(argv[0]);
+                    exit(EXIT_FAILURE);
+                }
+                n = atoi(argv[++i]);
+                if (n < 0) {
+                    cout << "Invalid repeat count: " << n << "! Using default value: " << (uint32_t) DEFAULT_REPEAT_COUNT << endl;
+                } else {
+                    repeat_count = n;
+                }
+                break;
+            case 'p':
+                print_elements = true;
+                break;
+            case '?':
+                print_usage(argv[0]);
+                exit(EXIT_SUCCESS);
+            default:
+                cout << "Invalid option: \"" << argv[i] << "\"!" << endl;
+                exit(EXIT_FAILURE);
+        }
+    }
+    if (thread_count > element_count) {
+        cout << "There are more threads available than there are elements to process. Reducing thread count to element count." << endl;
+        thread_count = element_count;
     }
 }
 
-void print_float_examples()
+void print_parameters()
 {
-    uint32_t buf;
-
-    buf = SMALLEST_SUBNORMAL;
-    printf("Smallest subnormal: [%.10e]\n", reinterpret_cast<float&>(buf));
-    buf = LARGEST_SUBNORMAL;
-    printf("Largest subnormal: [%.10e]\n", reinterpret_cast<float&>(buf));
-
-    buf = SMALLEST_NORMAL;
-    printf("Smallest normal: [%.10e]\n", reinterpret_cast<float&>(buf));
-    buf = LARGEST_NORMAL;
-    printf("Largest normal: [%.10e]\n", reinterpret_cast<float&>(buf));
-
-    buf = LARGEST_LESS_THAN_ONE;
-    printf("Largest less than one (1.0): [%.10e]\n", reinterpret_cast<float&>(buf));
-    buf = ONE;
-    printf("One (1.0): [%.10e]\n", reinterpret_cast<float&>(buf));
-    buf = SMALLEST_LARGER_THAN_ONE;
-    printf("Smallest larger than one (1.0): [%.10e]\n", reinterpret_cast<float&>(buf));
-
-    buf = MINUS_TWO;
-    printf("Minus two (-2.0): [%.10e]\n", reinterpret_cast<float&>(buf));
-
-    buf = POSITIVE_ZERO;
-    printf("Zero (positive): [%.10e]\n", reinterpret_cast<float&>(buf));
-    buf = NEGATIVE_ZERO;
-    printf("Negative zero: [%.10e]\n", reinterpret_cast<float&>(buf));
-
-    buf = POSITIVE_INFINITY;
-    printf("Infinity (positive): [%.10e]\n", reinterpret_cast<float&>(buf));
-    buf = NEGATIVE_INFINITY;
-    printf("Negative infinity: [%.10e]\n", reinterpret_cast<float&>(buf));
-
-    buf = POSITIVE_QNAN;
-    printf("qNaN: [%.10e]\n", reinterpret_cast<float&>(buf));
-    buf = NEGATIVE_QNAN;
-    printf("'Negative' qNaN: [%.10e]\n", reinterpret_cast<float&>(buf));
-    buf = POSITIVE_SNAN;
-    printf("sNaN: [%.10e]\n", reinterpret_cast<float&>(buf));
-    buf = NEGATIVE_SNAN;
-    printf("'Negative' sNaN: [%.10e]\n", reinterpret_cast<float&>(buf));
+    cout << "Parameters:" << endl;
+    cout << "  Thread count:             " << thread_count << endl;
+    cout << "  Element count:            " << element_count << endl;
+    cout << "  Seed:                     " << seed << endl;
+    cout << "  Exponent minimum value:   " << exponent_min << endl;
+    cout << "  Exponent maximum value:   " << exponent_max << endl;
+    cout << "  Repeat count:             " << repeat_count << endl;
+    cout << "  Print elements:           " << (print_elements ? "YES" : "NO") << endl;
 }
 
-void print_float_in_binary(uint32_t f)
+void generate_elements()
 {
-    uint32_t sign = (f >> 31) & 0b1;
-    printf("Sign: %u (%c) ", sign, (sign == 0 ? '+' : '-'));
-    printf("Exponent: ");
-    uint32_t exponent = (f >> 23) & 0xFF;
-    for (int i = 0; i < 8; ++i) {
-        printf("%u", (exponent >> (8 - i - 1)) & 0b1);
+    mt19937 gen(seed);
+    uniform_int_distribution<uint32_t> sign_dist(0, 1);
+    // uniform_int_distribution<uint32_t> exponent_dist(0, (1 << 8) - 1);
+    uniform_int_distribution<uint32_t> exponent_dist(exponent_min + EXPONENT_BIAS, exponent_max + EXPONENT_BIAS);
+    uniform_int_distribution<uint32_t> mantisa_dist(0, (1 << 23) - 1);
+
+    elements = new vector<float>(element_count);
+
+    uint32_t positive_count = 0, negative_count = 0;
+    for (uint32_t i = 0; i < element_count; ++i) {
+        uint32_t bits = (sign_dist(gen) << 31) | (exponent_dist(gen) << 23) | (mantisa_dist(gen) << 0);
+        static_assert(sizeof(uint32_t) == sizeof(float));
+        float number;
+        memcpy(&number, &bits, sizeof(uint32_t));
+        (*elements)[i] = number;
+        if (print_elements) {
+            cout << i + 1 << ". element: " << fixed << setprecision(10) << number << " (" << scientific << setprecision(10) << number << ')' << endl;
+            if (number > 0) {
+                positive_count++;
+            } else {
+                negative_count++;
+            }
+        }
     }
-    printf(" (%u) ", exponent);
-    uint32_t mantisa = f & 0x7FFF;
-    for (int i = 0; i < 23; ++i) {
-        printf("%u", (mantisa >> (23 - i - 1)) & 0b1);
+
+    if (print_elements) {
+        cout << "Number of positive elements: " << positive_count << endl;
+        cout << "Number of negative elements: " << negative_count << endl;
     }
-    printf(" (%u) ", ((0b1 << 24) | mantisa));
+
+    cout << "Successfully generated " << element_count << " random floating-point numbers." << endl;
 }
 
-void print_float_in_binary(float f)
+int compare(float f1, float f2)
 {
-    uint32_t bits;
-    static_assert(sizeof(float) == sizeof(uint32_t));
-    memcpy(&bits, &f, sizeof(float));
-    print_float_in_binary(bits);
+    // TODO: Implement floating-point comparison for 6-7 significant digits...
+    if (f1 < f2) return -1;
+    else if (f1 > f2) return 1;
+    return 0;
 }
 
-void* parallel_sum(void *data)
+void run_sequential()
+{
+    chrono::steady_clock::time_point start;
+    float sum;
+    for (uint32_t run_idx = 0; run_idx <= repeat_count; ++run_idx) {
+        if (run_idx == 0) {
+            start = chrono::steady_clock::now();
+        }
+        sum = 0;
+        for (uint32_t i = 0; i < element_count; ++i) {
+            // NOTE: This operation results in non-reproducible results. The reason is that
+            //       element order is shuffled after every repetition hence rounding errors
+            //       and other inherent errors with floating-point arithmetic occur.
+            sum += (*elements)[i];
+        }
+        if (run_idx == 0) {
+            sum_sequential = sum;
+            time_sequential = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
+            cout << "Sequential sum: " << fixed << setprecision(10) << sum_sequential << " (" << scientific << setprecision(10) << sum_sequential << ')' << endl;
+        } else if (compare(sum, sum_sequential)) {
+            cout << "Sequential sum not reproducible after " << run_idx << " runs!" << endl;
+            break;
+        }
+    }
+}
+
+void* kernel_sum(void *data)
 {
     uint32_t id = *((uint32_t*) data);
-    uint32_t start = id * blk_size;
-    uint32_t end = start + blk_size > array_size ? array_size : start + blk_size;
-
+    chrono::steady_clock::time_point start;
     for (uint32_t repeat_counter = 0; repeat_counter <= repeat_count; ++repeat_counter) {
         if (id == 0 && repeat_counter == 0) {
-            time_par = get_posix_clock_time();
+            start = chrono::steady_clock::now();
         }
 
         partial_sums[id] = 0;
-
-        for (uint32_t i = start; i < end; ++i) {
-            partial_sums[id] += arr[i];
-        }
-
-        if (repeat_counter == 0) {
-            printf("Partial sum %u. calculated: %.10f\n", id, partial_sums[id]);
+        uint32_t startIdx = id * blk_size;
+        uint32_t endIdx = startIdx + blk_size > element_count ? element_count : startIdx + blk_size;
+        for (uint32_t i = startIdx; i < endIdx; ++i) {
+            partial_sums[id] += (*elements)[i];
         }
 
         // Wait on barrier to synchronize all threads to start parallel reduction
-
-        pthread_barrier_wait(&bar);
+        pthread_barrier_wait(&barrier);
 
         // Reduce partial sums
-
         uint32_t pow2_count = 1, step_count = 0;
         while (pow2_count < thread_count) {
             pow2_count <<= 1;
             step_count++;
         }
         pow2_count >>= 1;
-
         if (step_count > 0) {
             // First reduction step is not based on power of two reduction since thread_count may not be a power of two...
-            if (id == 0 && repeat_counter == 0) {
-                // TODO: Remove this once reduction works
-                printf("Step 1: pow2_count = %u, required_count = %u\n", pow2_count, thread_count - pow2_count);
-            }
             if (id < thread_count - pow2_count) {
                 partial_sums[id] += partial_sums[id + pow2_count];
             }
             // Wait on barrier to synchronize all threads for next reduction step
-            pthread_barrier_wait(&bar);
-
+            pthread_barrier_wait(&barrier);
             // The rest of the steps are simple power of two reduction. There are now pow2_count partial sums to reduce...
             for (uint32_t i = 1; i < step_count; ++i) {
-                if (id == 0 && repeat_counter == 0) {
-                    // TODO: Remove this once reduction works
-                    printf("Step %u: pow2_count = %u, required_count = %u\n", i + 1, pow2_count, pow2_count >> 1);
-                }
                 pow2_count >>= 1;
                 if (id < pow2_count) {
                     partial_sums[id] += partial_sums[id + pow2_count];
                 }
                 // Wait on barrier to synchronize all threads for next reduction step
-                pthread_barrier_wait(&bar);
+                pthread_barrier_wait(&barrier);
             }
         }
 
+        // Check results
         if (id == 0) {
             if (repeat_counter == 0) {
-                time_par = get_posix_clock_time() - time_par;
-                par_sum = partial_sums[0];
-                par_sum_valid = true;
-                printf("Parallel sum: %.10f (%.10e)\n", par_sum, par_sum);
-            } else {
-                // printf("Parallel sum: %.10f (%.10e)\n", partial_sums[0], partial_sums[0]);
-                // Bitwise comparison is expected for sequential implementation.
-                // TODO: Use 6-7 significant digit comparison for parallelized implementation!!!
-                if (partial_sums[0] != par_sum) {
-                    printf("Parallel sum not reproducible after %u runs!\n", (repeat_counter + 1));
-                    par_sum_valid = false;
-                    break;
-                }
+                time_parallel = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
+                sum_parallel = partial_sums[0];
+                result_valid = true;
+                cout << "Parallel sum: " << fixed << setprecision(10) << sum_parallel << " (" << scientific << setprecision(10) << sum_parallel << ')' << endl;
+            } else if (compare(partial_sums[0], sum_parallel)) {
+                cout << "Parallel sum not reproducible after " << repeat_counter << " runs!" << endl;
+                result_valid = false;
             }
         }
 
         // Wait on barrier to synchronize all threads for next repetition
-        pthread_barrier_wait(&bar);
-
-        if (!par_sum_valid) {
-            printf("Thread %u exiting!\n", id);
-            break;
-        }
+        pthread_barrier_wait(&barrier);
+        if (!result_valid) break;
     }
-
     pthread_exit(NULL);
 }
 
-int main(int argc, char *argv[])
+void run_parallel()
 {
-    int opt;
-    while ((opt = getopt(argc, argv, "t:n:s:l:h:r:p")) != -1) {
-        switch (opt) {
-            case 't':
-                opt = atoi(optarg);
-                if (opt < 1) {
-                    printf("Invalid thread count: %d! Using default value: %u.\n", opt, DEFAULT_THREAD_COUNT);
-                } else {
-                    thread_count = opt;
-                }
-                break;
-            case 'n':
-                opt = atoi(optarg);
-                if (opt < 1) {
-                    printf("Invalid array size: %d! Using default value: %u.\n", opt, DEFAULT_ARRAY_SIZE);
-                } else {
-                    array_size = opt;
-                }
-                break;
-            case 's':
-                opt = atoi(optarg);
-                if (opt == 0) {
-                    std::random_device rd;
-                    seed = rd();
-                    printf("Special seed value 0. Generated random seed: %u.\n", seed);
-                } else {
-                    seed = opt;
-                }
-                break;
-            case 'l':
-                opt = atoi(optarg);
-                if (opt < EXPONENT_MIN_VALUE) {
-                    printf("Invalid exponent min value: %d! Using default value: %d.\n", opt, DEFAULT_EXPONENT_MIN_VALUE);
-                } else {
-                    exponent_min = opt;
-                }
-                break;
-            case 'h':
-                opt = atoi(optarg);
-                if (opt > EXPONENT_MAX_VALUE) {
-                    printf("Invalid exponent max value: %d! Using default value: %d.\n", opt, DEFAULT_EXPONENT_MAX_VALUE);
-                } else {
-                    exponent_max = opt;
-                }
-                break;
-            case 'r':
-                opt = atoi(optarg);
-                if (opt < 0) {
-                    printf("Invalid repeat count: %d! Using default value: %u.\n", opt, DEFAULT_REPEAT_COUNT);
-                } else {
-                    repeat_count = opt;
-                }
-                break;
-            case 'p':
-                print_numbers = true;
-                break;
-            default:
-                printf("Invalid option: '-%c'!\n", opt);
-                exit(EXIT_FAILURE);
-        }
-    }
-
-    // Print parameters
-
-    printf("Thread count: %u.\n", thread_count);
-    printf("Array size: %u.\n", array_size);
-    printf("Seed: %u.\n", seed);
-    printf("Exponent min value: %d.\n", exponent_min);
-    printf("Exponent max value: %d.\n", exponent_max);
-    printf("Repeat count: %d.\n", repeat_count);
-    printf("Print numbers: %s.\n", (print_numbers ? "enabled" : "disabled"));
-
-    // Generate random number array
-
-    mt19937 gen(seed);
-
-    uniform_int_distribution<uint32_t> sign_dist(0, 1);
-    // std::uniform_int_distribution<uint32_t> exponent_dist(0, (1 << 8) - 1);
-    uniform_int_distribution<uint32_t> exponent_dist(exponent_min + EXPONENT_BIAS, exponent_max + EXPONENT_BIAS);
-    std::uniform_int_distribution<uint32_t> mantisa_dist(0, (1 << 23) - 1);
-
-    uint32_t positive_cnt = 0, negative_cnt = 0;
-
-    arr = new float[array_size];
-
-    for (uint32_t i = 0; i < array_size; ++i) {
-        uint32_t tmp = (sign_dist(gen) << 31) | (exponent_dist(gen) << 23) | (mantisa_dist(gen) << 0);
-        // print_float_in_binary(tmp);
-        static_assert(sizeof(uint32_t) == sizeof(float));
-        memcpy(&(arr[i]), &tmp, sizeof(uint32_t));
-        if (print_numbers) {
-            printf("arr[%u] = %.10f (%.10e)\n", i, arr[i], arr[i]);
-        }
-        if (arr[i] > 0) positive_cnt++;
-        else negative_cnt++;
-    }
-
-    printf("Positive count: %u, Negative count: %u\n", positive_cnt, negative_cnt);
-
-    // Calculate sequential sum of the array
-
-    float seq_sum = 0;
-
-    uint64_t time_seq = get_posix_clock_time();
-
-    for (uint32_t i = 0; i < array_size; ++i) {
-        seq_sum += arr[i];
-    }
-
-    time_seq = get_posix_clock_time() - time_seq;
-
-    printf("Sequential sum: %.10f (%.10e)\n", seq_sum, seq_sum);
-
-    bool valid = true;
-    for (uint32_t i = 0; i < repeat_count; ++i) {
-        float sum = 0;
-        for (uint32_t j = 0; j < array_size; ++j) {
-            sum += arr[j];
-        }
-        // Bitwise comparison is expected for sequential implementation.
-        // Use 6-7 significant digit comparison for parallelized implementation!!!
-        if (sum != seq_sum) {
-            printf("Sequential sum not reproducible after %u runs!\n", (i + 1));
-            valid = false;
-            break;
-        }
-    }
-
     // Initialize POSIX threads
-
-    blk_size = (array_size + thread_count - 1) / thread_count;
-
     pthread_t *threads = new pthread_t[thread_count];
     pthread_attr_t attr;
     uint32_t *thread_ids = new uint32_t[thread_count];
+
+    blk_size = (element_count + thread_count - 1) / thread_count;
     partial_sums = new float[thread_count];
 
-    // Create thread attribute object (in case this code is used with compilers other than G++)
-
     int err;
-    
+
+    // Create thread attribute object (in case this code is used with compilers other than G++)
     err = pthread_attr_init(&attr);
     if (err) {
         fprintf(stderr, "Error - pthread_attr_init() return code: %d\n", err);
         exit(EXIT_FAILURE);
     }
-
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
 
-    err = pthread_barrier_init(&bar, NULL, thread_count);
+    // Create thread barrier
+    err = pthread_barrier_init(&barrier, NULL, thread_count);
     if (err) {
         fprintf(stderr, "Error - pthread_barrier_init() return code: %d\n", err);
         exit(EXIT_FAILURE);
     }
 
+    // Create threads
     for (uint32_t i = 0; i < thread_count; ++i) {
-        thread_ids[i] = i;
-        err = pthread_create(&(threads[i]), &attr, parallel_sum, &(thread_ids[i]));
+        thread_ids[i] = i; // Generate thread ids for easy work sharing
+        err = pthread_create(&(threads[i]), &attr, kernel_sum, &(thread_ids[i]));
         if (err) {
             fprintf(stderr, "Error - pthread_create() return code: %d\n", err);
             exit(EXIT_FAILURE);
@@ -394,7 +351,6 @@ int main(int argc, char *argv[])
     }
 
     // Wait for other threads to complete
-
     for (uint32_t i = 0; i < thread_count; ++i) {
         err = pthread_join(threads[i], NULL);
         if (err) {
@@ -403,13 +359,8 @@ int main(int argc, char *argv[])
         }
     }
 
-    printf("Sequential execution time: %llu [us] (%.10f [ms])\n", time_seq, ((float) time_seq) / 1000.0);
-    printf("Parallel execution time: %llu [us] (%.10f [ms])\n", time_par, ((float) time_par) / 1000.0);
-    printf("Speedup: %.10f\n", ((float) time_seq) / ((float) time_par));
-
-    // Deallocate dynamic memory
-
-    err = pthread_barrier_destroy(&bar);
+    // Cleanup
+    err = pthread_barrier_destroy(&barrier);
     if (err) {
         fprintf(stderr, "Error - pthread_barrier_destroy() return code: %d\n", err);
         exit(EXIT_FAILURE);
@@ -421,10 +372,31 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    free(partial_sums);
-    free(thread_ids);
-    free(threads);
-    free(arr);
+    delete partial_sums;
+    delete thread_ids;
+    delete threads;
+}
 
-    exit(EXIT_SUCCESS);
+void cleanup()
+{
+    delete elements;
+}
+
+int main(int argc, char *argv[])
+{
+    parse_parameters(argc, argv);
+    print_parameters();
+
+    generate_elements();
+
+    run_sequential();
+    run_parallel();
+
+    cout << "Sequential execution time: " << time_sequential << " [us] (" << fixed << setprecision(10) << (float) time_sequential / 1000.0 << " [ms])" << endl;
+    cout << "Parallel execution time: " << time_parallel << " [us] (" << fixed << setprecision(10) << (float) time_parallel / 1000.0 << " [ms])" << endl;
+    cout << "Speedup: " << fixed << setprecision(10) << ((float) time_sequential) / ((float) time_parallel) << endl;
+
+    cleanup();
+
+    return EXIT_SUCCESS;
 }
