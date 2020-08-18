@@ -298,10 +298,10 @@ void* kernel_sum(void *data)
         if (id == 0) {
             if (repeat_counter == 0) {
                 time_parallel = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
-                sum_parallel = partial_sums[0];
+                sum_parallel = partial_sums[id];
                 result_valid = true;
                 cout << "Parallel sum: " << fixed << setprecision(10) << sum_parallel << " (" << scientific << setprecision(10) << sum_parallel << ')' << endl;
-            } else if (compare(partial_sums[0], sum_parallel)) {
+            } else if (compare(partial_sums[id], sum_parallel)) {
                 cout << "Parallel sum not reproducible after " << repeat_counter << " runs!" << endl;
                 result_valid = false;
             }
@@ -381,9 +381,9 @@ void run_parallel()
         exit(EXIT_FAILURE);
     }
 
-    delete partial_sums;
-    delete thread_ids;
-    delete threads;
+    delete[] partial_sums;
+    delete[] thread_ids;
+    delete[] threads;
 }
 
 void cleanup()
