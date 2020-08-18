@@ -1,7 +1,7 @@
 CC		= g++
 CFLAGS	= -std=c++14 -pthread -O2
-SRC		= rng.cpp
-TARGET	= rng
+SRC		= RNGExample.cpp
+TARGET	= RNGExample
 
 all: $(TARGET)
 

@@ -6,38 +6,36 @@
 #include <algorithm>
 #include <chrono>
 #include <pthread.h>
+#include <thread>
+#include "LongAccumulator.h"
 
 using namespace std;
 
-// Floating-point specification constants
-
-constexpr int EXPONENT_MIN_VALUE = -126;
-constexpr int EXPONENT_MAX_VALUE = 127;
-constexpr int EXPONENT_BIAS = 127;
-
 // Default values
 
-constexpr uint32_t DEFAULT_THREAD_COUNT = 8;
-constexpr uint32_t DEFAULT_ELEMENT_COUNT = 1000;
+constexpr int DEFAULT_THREAD_COUNT = 8;
+constexpr int DEFAULT_ELEMENT_COUNT = 1000;
 constexpr uint32_t DEFAULT_SEED = 1549813198;
 constexpr int DEFAULT_EXPONENT_MIN_VALUE = -10;
 constexpr int DEFAULT_EXPONENT_MAX_VALUE = 10;
-constexpr uint32_t DEFAULT_REPEAT_COUNT = 100;
+constexpr int DEFAULT_REPEAT_COUNT = 100;
 
 // Program parameters
 
-uint32_t thread_count   = DEFAULT_THREAD_COUNT;
-uint32_t element_count  = DEFAULT_ELEMENT_COUNT;
-uint32_t seed           = DEFAULT_SEED;
-int exponent_min        = DEFAULT_EXPONENT_MIN_VALUE;
-int exponent_max        = DEFAULT_EXPONENT_MAX_VALUE;
-uint32_t repeat_count   = DEFAULT_REPEAT_COUNT;
-bool print_elements     = false;
+int thread_count    = DEFAULT_THREAD_COUNT;
+int element_count   = DEFAULT_ELEMENT_COUNT;
+uint32_t seed       = DEFAULT_SEED;
+int exponent_min    = DEFAULT_EXPONENT_MIN_VALUE;
+int exponent_max    = DEFAULT_EXPONENT_MAX_VALUE;
+int repeat_count    = DEFAULT_REPEAT_COUNT;
+bool print_elements = false;
 
 // Shared variables
 
 vector<float> *elements;
-uint32_t blk_size;
+default_random_engine *shuffle_engine;
+int *start_indices;
+vector<int> *reduction_map;
 float *partial_sums;
 pthread_barrier_t barrier;
 bool result_valid;
@@ -62,14 +60,14 @@ void print_usage(char program_name[])
 
 void parse_parameters(int argc, char *argv[])
 {
-    for (uint32_t i = 1; i < argc; ++i) {
-        uint32_t arglen = strlen(argv[i]);
+    for (int i = 1; i < argc; ++i) {
+        int arglen = strlen(argv[i]);
         if (arglen < 2 || argv[i][0] != '-') {
             cout << "Invalid argument: \"" << argv[i] << '"' << endl;
             print_usage(argv[0]);
             exit(EXIT_FAILURE);
         }
-        uint32_t n;
+        int n;
         switch (argv[i][1]) {
             case 't':
                 if (i + 1 == argc) {
@@ -79,7 +77,7 @@ void parse_parameters(int argc, char *argv[])
                 }
                 n = atoi(argv[++i]);
                 if (n < 1) {
-                    cout << "Invalid thread count: " << n << "! Using default value: " << (uint32_t) DEFAULT_THREAD_COUNT << endl;
+                    cout << "Invalid thread count: " << n << "! Using default value: " << DEFAULT_THREAD_COUNT << endl;
                 } else {
                     thread_count = n;
                 }
@@ -92,7 +90,7 @@ void parse_parameters(int argc, char *argv[])
                 }
                 n = atoi(argv[++i]);
                 if (n < 1) {
-                    cout << "Invalid element count: " << n << "! Using default value: " << (uint32_t) DEFAULT_ELEMENT_COUNT << endl;
+                    cout << "Invalid element count: " << n << "! Using default value: " << DEFAULT_ELEMENT_COUNT << endl;
                 } else {
                     element_count = n;
                 }
@@ -146,7 +144,7 @@ void parse_parameters(int argc, char *argv[])
                 }
                 n = atoi(argv[++i]);
                 if (n < 0) {
-                    cout << "Invalid repeat count: " << n << "! Using default value: " << (uint32_t) DEFAULT_REPEAT_COUNT << endl;
+                    cout << "Invalid repeat count: " << n << "! Using default value: " << DEFAULT_REPEAT_COUNT << endl;
                 } else {
                     repeat_count = n;
                 }
@@ -190,8 +188,8 @@ void generate_elements()
 
     elements = new vector<float>(element_count);
 
-    uint32_t positive_count = 0, negative_count = 0;
-    for (uint32_t i = 0; i < element_count; ++i) {
+    int positive_count = 0, negative_count = 0;
+    for (int i = 0; i < element_count; ++i) {
         uint32_t bits = (sign_dist(gen) << 31) | (exponent_dist(gen) << 23) | (mantisa_dist(gen) << 0);
         static_assert(sizeof(uint32_t) == sizeof(float));
         float number;
@@ -227,12 +225,12 @@ void run_sequential()
 {
     chrono::steady_clock::time_point start;
     float sum;
-    for (uint32_t run_idx = 0; run_idx <= repeat_count; ++run_idx) {
+    for (int run_idx = 0; run_idx <= repeat_count; ++run_idx) {
         if (run_idx == 0) {
             start = chrono::steady_clock::now();
         }
         sum = 0;
-        for (uint32_t i = 0; i < element_count; ++i) {
+        for (int i = 0; i < element_count; ++i) {
             // NOTE: This operation results in non-reproducible results. The reason is that
             //       element order is shuffled after every repetition hence rounding errors
             //       and other inherent errors with floating-point arithmetic occur.
@@ -246,22 +244,62 @@ void run_sequential()
             cout << "Sequential sum not reproducible after " << run_idx << " runs!" << endl;
             break;
         }
+        if (run_idx < repeat_count) {
+            // Shuffle element vector to incur variability
+            shuffle(elements->begin(), elements->end(), *shuffle_engine);
+        }
+    }
+}
+
+void generate_start_indices()
+{
+    int min = 1;
+    int max = element_count - thread_count * min;
+    if (max == 0) {
+        for (int i = 0; i < thread_count; ++i) {
+            start_indices[i] = 1;
+        }
+    } else {
+        random_device rd;
+        mt19937 gen(rd());
+        uniform_int_distribution<int> size_dist(0, max);
+        start_indices[0] = 0;
+        for (int i = 1; i < thread_count; ++i) {
+            start_indices[i] = size_dist(gen);
+        }
+        sort(start_indices, start_indices + thread_count);
+        for (int i = 1; i < thread_count; ++i) {
+            start_indices[i - 1] = start_indices[i] - start_indices[i - 1] + min;
+        }
+        start_indices[thread_count - 1] = max - start_indices[thread_count - 1] + min;
+        int size = 0;
+        for (int i = 0; i < thread_count; ++i) {
+            int tmp = start_indices[i];
+            start_indices[i] = size;
+            size += tmp;
+        }
     }
 }
 
 void* kernel_sum(void *data)
 {
-    uint32_t id = *((uint32_t*) data);
+    int id = *((int*) data);
     chrono::steady_clock::time_point start;
-    for (uint32_t repeat_counter = 0; repeat_counter <= repeat_count; ++repeat_counter) {
-        if (id == 0 && repeat_counter == 0) {
-            start = chrono::steady_clock::now();
+    for (int repeat_counter = 0; repeat_counter <= repeat_count; ++repeat_counter) {
+        if (id == 0) {
+            // Generate start indices
+            generate_start_indices();
+            if (repeat_counter == 0) {
+                start = chrono::steady_clock::now();
+            }
         }
 
+        // Synchronize on barrier to get start index
+        pthread_barrier_wait(&barrier);
+
         partial_sums[id] = 0;
-        uint32_t startIdx = id * blk_size;
-        uint32_t endIdx = startIdx + blk_size > element_count ? element_count : startIdx + blk_size;
-        for (uint32_t i = startIdx; i < endIdx; ++i) {
+        int end = id < thread_count - 1 ? start_indices[id + 1] : element_count;
+        for (int i = start_indices[id]; i < end; ++i) {
             partial_sums[id] += (*elements)[i];
         }
 
@@ -269,7 +307,7 @@ void* kernel_sum(void *data)
         pthread_barrier_wait(&barrier);
 
         // Reduce partial sums
-        uint32_t pow2_count = 1, step_count = 0;
+        int pow2_count = 1, step_count = 0;
         while (pow2_count < thread_count) {
             pow2_count <<= 1;
             step_count++;
@@ -278,15 +316,15 @@ void* kernel_sum(void *data)
         if (step_count > 0) {
             // First reduction step is not based on power of two reduction since thread_count may not be a power of two...
             if (id < thread_count - pow2_count) {
-                partial_sums[id] += partial_sums[id + pow2_count];
+                partial_sums[(*reduction_map)[id]] += partial_sums[(*reduction_map)[id + pow2_count]];
             }
             // Wait on barrier to synchronize all threads for next reduction step
             pthread_barrier_wait(&barrier);
             // The rest of the steps are simple power of two reduction. There are now pow2_count partial sums to reduce...
-            for (uint32_t i = 1; i < step_count; ++i) {
+            for (int i = 1; i < step_count; ++i) {
                 pow2_count >>= 1;
                 if (id < pow2_count) {
-                    partial_sums[id] += partial_sums[id + pow2_count];
+                    partial_sums[(*reduction_map)[id]] += partial_sums[(*reduction_map)[id + pow2_count]];
                 }
                 // Wait on barrier to synchronize all threads for next reduction step
                 pthread_barrier_wait(&barrier);
@@ -304,6 +342,12 @@ void* kernel_sum(void *data)
                 cout << "Parallel sum not reproducible after " << repeat_counter << " runs!" << endl;
                 result_valid = false;
             }
+            if (repeat_counter < repeat_count && result_valid) {
+                // Shuffle element vector to incur variability
+                shuffle(elements->begin(), elements->end(), *shuffle_engine);
+                // Shuffle reduction map to incur additional variability
+                shuffle(reduction_map->begin(), reduction_map->end(), *shuffle_engine);
+            }
         }
 
         // Wait on barrier to synchronize all threads for next repetition
@@ -315,12 +359,17 @@ void* kernel_sum(void *data)
 
 void run_parallel()
 {
+    // Get number of available processors
+    const int processor_count = thread::hardware_concurrency();
+    // cout << "Processor count: " << processor_count << endl;
+
     // Initialize POSIX threads
     pthread_t *threads = new pthread_t[thread_count];
     pthread_attr_t attr;
-    uint32_t *thread_ids = new uint32_t[thread_count];
+    int *thread_ids = new int[thread_count];
 
-    blk_size = (element_count + thread_count - 1) / thread_count;
+    start_indices = new int[thread_count];
+    reduction_map = new vector<int>(thread_count);
     partial_sums = new float[thread_count];
 
     int err;
@@ -340,9 +389,14 @@ void run_parallel()
         exit(EXIT_FAILURE);
     }
 
-    // Create threads
-    for (uint32_t i = 0; i < thread_count; ++i) {
+    // Create threads with affinity
+    cpu_set_t cpus;
+    for (int i = 0; i < thread_count; ++i) {
         thread_ids[i] = i; // Generate thread ids for easy work sharing
+        (*reduction_map)[i] = i; // Generate initial reduction map for each thread id (same as thread id)
+        CPU_ZERO(&cpus);
+        CPU_SET(i % processor_count, &cpus);
+        pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &cpus);
         err = pthread_create(&(threads[i]), &attr, kernel_sum, &(thread_ids[i]));
         if (err) {
             fprintf(stderr, "Error - pthread_create() return code: %d\n", err);
@@ -351,7 +405,7 @@ void run_parallel()
     }
 
     // Wait for other threads to complete
-    for (uint32_t i = 0; i < thread_count; ++i) {
+    for (int i = 0; i < thread_count; ++i) {
         err = pthread_join(threads[i], NULL);
         if (err) {
             fprintf(stderr, "Error - pthread_join() return code: %d\n", err);
@@ -373,21 +427,27 @@ void run_parallel()
     }
 
     delete partial_sums;
+    delete reduction_map;
+    delete start_indices;
     delete thread_ids;
     delete threads;
 }
 
 void cleanup()
 {
+    delete shuffle_engine;
     delete elements;
 }
 
 int main(int argc, char *argv[])
 {
+/*
     parse_parameters(argc, argv);
     print_parameters();
 
     generate_elements();
+
+    shuffle_engine = new default_random_engine(seed);
 
     run_sequential();
     run_parallel();
@@ -397,6 +457,45 @@ int main(int argc, char *argv[])
     cout << "Speedup: " << fixed << setprecision(10) << ((float) time_sequential) / ((float) time_parallel) << endl;
 
     cleanup();
+*/
+    LongAccumulator acc;
+
+    float f;
+
+    // acc.add(-0.875);
+    // cout << "ACC - 0.875" << endl;
+    // acc.print();
+
+    // acc.add(5.25);
+    // cout << "ACC + 5.25" << endl;
+    // acc.print();
+
+    // acc.add(-3.75);
+    // cout << "ACC - 3.75" << endl;
+    // acc.print();
+
+    // acc.add(-5.125);
+    // cout << "ACC - 5.125" << endl;
+    // acc.print();
+
+    // acc.add(1);
+    // cout << "ACC + 1" << endl;
+    // acc.print();
+
+    while (true) {
+        cout << "ACC = " << acc.roundToFloat() << endl;
+        cout << "Enter a float value to accumulate: ";
+        cin >> f;
+        acc.add(f);
+    }
+
+    // cout << "Enter a float value: ";
+    // cin >> a;
+
+    // acc.add(a);
+    // acc.print();
+
+    // cout << acc.roundToFloat() << endl;
 
     return EXIT_SUCCESS;
 }

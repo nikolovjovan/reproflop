@@ -54,5 +54,7 @@ dkms.conf
 # Visual Studio Code Settings
 .vscode
 
-# rng files
-src/rng/rng
+# RNGExample executable files
+src/RNGExample/Base/RNGExample
+src/RNGExample/WeakReproducibility/RNGExample
+src/RNGExample/StrongReproducibility/RNGExample
