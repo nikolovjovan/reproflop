@@ -19,10 +19,10 @@ float_components extractComponents(float f)
     if (components.exponent != 0x00 && components.exponent != 0xFF) {
         components.mantissa |= 0x800000; // hidden bit is equal to 1
     }
-    cout << "Float: " << fixed << setprecision(10) << f << " (" << bitset<32>(tmp)
-        << ") Sign: " << components.negative
-        << " Exponent: " << components.exponent << " (" << bitset<8>(components.exponent)
-        << ") Mantissa: " << components.mantissa << " (" << bitset<24>(components.mantissa) << ')' << endl;
+    // cout << "Float: " << fixed << setprecision(10) << f << " (" << bitset<32>(tmp)
+    //     << ") Sign: " << components.negative
+    //     << " Exponent: " << components.exponent << " (" << bitset<8>(components.exponent)
+    //     << ") Mantissa: " << components.mantissa << " (" << bitset<24>(components.mantissa) << ')' << endl;
     return components;
 }
 
@@ -41,13 +41,11 @@ LongAccumulator::LongAccumulator()
 {
     acc = new uint32_t[ACC_SIZE];
     clear();
-    // cout << "Constructor!" << endl;
 }
 
 LongAccumulator::~LongAccumulator()
 {
     delete acc;
-    // cout << "Destructor!" << endl;
 }
 
 void LongAccumulator::clear()
@@ -65,13 +63,15 @@ void LongAccumulator::add(float f)
     uint32_t k = (components.exponent + 22) >> 5;
     // Check if more than one word is affected (split mantissa)
     bool split = ((components.exponent - 1) >> 5) < k;
-    cout << "k = " << k << " split: " << split << endl;
+    // cout << "k = " << k << " split: " << split << endl;
+    // Calculate number of bits in the higher part of the mantissa
+    uint32_t hi_width = (components.exponent - 9) % 32;
     if (!split) {
-        add(k, components.mantissa, components.negative);
+        add(k, components.mantissa << (hi_width - 24), components.negative);
     } else {
-        // Calculate number of bits in the higher part of the mantissa
-        uint32_t hi_width = (components.exponent - 9) % 32;
-        // Shift mantissa left for lower bits
+        add(k - 1, components.mantissa << (8 + hi_width), components.negative);
+        add(k, components.mantissa >> (24 - hi_width), components.negative);
+        /*// Shift mantissa left for lower bits
         uint32_t lo = components.mantissa << (8 + hi_width);
         add(k - 1, lo, components.negative);
         // Shift mantissa right for higher bits
@@ -82,8 +82,12 @@ void LongAccumulator::add(float f)
         for (int i = 31; i >= 8 + hi_width; --i) {
             cout << bits_lo.test(i);
         }
-        cout << endl;
+        cout << endl;*/
     }
+    // DEBUG INFO REMOVE
+    // print();
+    // cout << "ACC = " << fixed << setprecision(10) << roundToFloat() << endl;
+    // clear();
 }
 
 void LongAccumulator::add(LongAccumulator &acc)
@@ -134,9 +138,9 @@ float LongAccumulator::roundToFloat()
             components.exponent = 0xFF;
         } else {
             // cout << "k = " << k << " i = " << i << " acc[k] = " << bitset<32>(acc[k]) << endl;
-            uint32_t mask = (1 << (i + 1)) - 1;
+            uint32_t mask = ((uint64_t) 1 << (i + 1)) - 1;
             components.mantissa = acc[k] & mask;
-            // cout << "mask = " << bitset<32>(mask) << " acc[k] & mask = " << components.mantissa << endl;
+            // cout << "mask = " << bitset<32>(mask) << " acc[k] & mask = " << bitset<32>(components.mantissa) << endl;
             if (i > 23) {
                 components.mantissa >>= i - 23;
                 // Check remaining bits to round the number...

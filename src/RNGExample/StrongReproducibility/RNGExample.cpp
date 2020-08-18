@@ -42,8 +42,8 @@ bool result_valid;
 
 // Results
 
-float sum_sequential, sum_parallel;
-uint64_t time_sequential, time_parallel;
+float sum_sequential, sum_parallel, sum_sequential_reproducible;
+uint64_t time_sequential, time_parallel, time_sequential_reproducible;
 
 void print_usage(char program_name[])
 {
@@ -251,6 +251,39 @@ void run_sequential()
     }
 }
 
+void run_sequential_reproducible()
+{
+    chrono::steady_clock::time_point start;
+    LongAccumulator acc;
+    for (int run_idx = 0; run_idx <= repeat_count; ++run_idx) {
+        if (run_idx == 0) {
+            start = chrono::steady_clock::now();
+        }
+        for (int i = 0; i < element_count; ++i) {
+            // NOTE: This operation results in non-reproducible results. The reason is that
+            //       element order is shuffled after every repetition hence rounding errors
+            //       and other inherent errors with floating-point arithmetic occur.
+            acc.add((*elements)[i]);
+        }
+        if (run_idx == 0) {
+            sum_sequential_reproducible = acc.roundToFloat();
+            time_sequential_reproducible = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
+            cout << "Sequential sum (reproducible): " << fixed << setprecision(10) << sum_sequential_reproducible << " (" << scientific << setprecision(10) << sum_sequential_reproducible << ')' << endl;
+        } else if (compare(acc.roundToFloat(), sum_sequential_reproducible)) {
+            cout << "Sequential sum not reproducible after " << run_idx << " runs!" << endl;
+            break;
+        }
+        if (run_idx < repeat_count) {
+            // Shuffle element vector to incur variability
+            shuffle(elements->begin(), elements->end(), *shuffle_engine);
+            // Reset accumulator
+            acc.clear();
+            // auto time_loop = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
+            // cout << "Run " << run_idx << ". passed! Time elapsed: " << time_loop << " [us] (" << fixed << setprecision(10) << (float) time_loop / 1000.0 << " [ms])" << endl;
+        }
+    }
+}
+
 void generate_start_indices()
 {
     int min = 1;
@@ -439,25 +472,8 @@ void cleanup()
     delete elements;
 }
 
-int main(int argc, char *argv[])
+void long_accumulator_test()
 {
-/*
-    parse_parameters(argc, argv);
-    print_parameters();
-
-    generate_elements();
-
-    shuffle_engine = new default_random_engine(seed);
-
-    run_sequential();
-    run_parallel();
-
-    cout << "Sequential execution time: " << time_sequential << " [us] (" << fixed << setprecision(10) << (float) time_sequential / 1000.0 << " [ms])" << endl;
-    cout << "Parallel execution time: " << time_parallel << " [us] (" << fixed << setprecision(10) << (float) time_parallel / 1000.0 << " [ms])" << endl;
-    cout << "Speedup: " << fixed << setprecision(10) << ((float) time_sequential) / ((float) time_parallel) << endl;
-
-    cleanup();
-*/
     LongAccumulator acc;
 
     float f;
@@ -496,6 +512,33 @@ int main(int argc, char *argv[])
     // acc.print();
 
     // cout << acc.roundToFloat() << endl;
+}
+
+int main(int argc, char *argv[])
+{
+    parse_parameters(argc, argv);
+    print_parameters();
+
+    generate_elements();
+
+    shuffle_engine = new default_random_engine(seed);
+
+    run_sequential();
+    run_sequential_reproducible();
+    // run_parallel();
+    
+    if (compare(sum_sequential, sum_sequential_reproducible)) {
+        cout << "Non-reproducible and reproducible results do not match!" << endl;
+    }
+
+    cout << "Sequential execution time: " << time_sequential << " [us] (" << fixed << setprecision(10) << (float) time_sequential / 1000.0 << " [ms])" << endl;
+    cout << "Sequential execution time (reproducible): " << time_sequential_reproducible << " [us] (" << fixed << setprecision(10) << (float) time_sequential_reproducible / 1000.0 << " [ms])" << endl;
+    cout << "Time reproducible / non-reproducible: " << fixed << setprecision(10) << ((float) time_sequential_reproducible) / ((float) time_sequential) << endl;
+
+    // cout << "Parallel execution time: " << time_parallel << " [us] (" << fixed << setprecision(10) << (float) time_parallel / 1000.0 << " [ms])" << endl;
+    // cout << "Speedup: " << fixed << setprecision(10) << ((float) time_sequential) / ((float) time_parallel) << endl;
+
+    cleanup();
 
     return EXIT_SUCCESS;
 }
