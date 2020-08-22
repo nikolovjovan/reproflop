@@ -1,6 +1,7 @@
 #ifndef LONGACCUMULATOR_H
 #define LONGACCUMULATOR_H
 
+#include <array>
 #include <cstdint>
 
 // Floating-point specification constants
@@ -27,9 +28,6 @@ float packToFloat(float_components components);
 class LongAccumulator
 {
 public:
-    LongAccumulator();
-    ~LongAccumulator();
-
     void clear();
 
     void add(float f);
@@ -39,7 +37,7 @@ public:
 
     void print();
 private:
-    uint32_t *acc;
+    std::array<uint32_t, ACC_SIZE> acc {};
 
     // Adds the value to the word at index idx with carry/borrow
     void add(uint32_t idx, uint32_t val, bool negative);

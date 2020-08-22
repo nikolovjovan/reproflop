@@ -37,22 +37,9 @@ float packToFloat(float_components components)
     return f;
 }
 
-LongAccumulator::LongAccumulator()
-{
-    acc = new uint32_t[ACC_SIZE];
-    clear();
-}
-
-LongAccumulator::~LongAccumulator()
-{
-    delete acc;
-}
-
 void LongAccumulator::clear()
 {
-    for (uint32_t i = 0; i < ACC_SIZE; ++i) {
-        acc[i] = 0;
-    }
+    acc = {};
 }
 
 void LongAccumulator::add(float f)
