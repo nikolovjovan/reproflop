@@ -13,10 +13,12 @@ jobs:
 
     steps:
     - uses: actions/checkout@v2
-    - name: make
+    - name: make Base
+      working-directory: src/RNGExample/Base
+      run: make all
+    - name: make StrongReproducibility
       working-directory: src/RNGExample/StrongReproducibility
-      run: make
-    - name: make check
-      run: make check
-    - name: make distcheck
-      run: make distcheck
+      run: make all
+    - name: make WeakReproducibility
+      working-directory: src/RNGExample/WeakReproducibility
+      run: make all
