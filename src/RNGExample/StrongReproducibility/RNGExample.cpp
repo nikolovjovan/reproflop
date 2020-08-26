@@ -11,6 +11,12 @@
 
 using namespace std;
 
+// Floating-point specification constants
+
+constexpr int EXPONENT_MIN_VALUE = -126;
+constexpr int EXPONENT_MAX_VALUE = 127;
+constexpr int EXPONENT_BIAS = 127;
+
 // Default values
 
 constexpr int DEFAULT_THREAD_COUNT = 8;

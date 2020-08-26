@@ -5,16 +5,7 @@
 #include <cstdint>
 #include <iostream>
 
-// Floating-point specification constants
-
-constexpr int EXPONENT_MIN_VALUE = -126;
-constexpr int EXPONENT_MAX_VALUE = 127;
-constexpr int EXPONENT_BIAS = 127;
-
-// Long accumulator constants
-
 constexpr uint32_t ACC_SIZE = 9;
-constexpr uint32_t RADIX_LOCATION = 20;
 
 typedef struct
 {
@@ -73,6 +64,9 @@ private:
 
     // Adds the value to the word at index idx with carry/borrow
     void add(uint32_t idx, uint32_t val, bool negative);
+
+    // Rounds mantissa according to currently selected rounding mode
+    void round(const LongAccumulator& acc, float_components& components, int word_idx, int bit_idx);
 };
 
 #endif

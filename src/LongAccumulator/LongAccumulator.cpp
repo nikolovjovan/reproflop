@@ -1,9 +1,10 @@
 #include "LongAccumulator.h"
-#include <cstring>
-#include <iostream>
-#include <iomanip>
+
 #include <bitset>
-#include <limits>
+#include <cfenv>
+#include <cstring>
+#include <iomanip>
+#include <iostream>
 
 using namespace std;
 
@@ -203,7 +204,7 @@ ostream& operator<<(ostream& out, const LongAccumulator& acc)
     if (startIdx < 4) startIdx = 4;
     while (endIdx < ACC_SIZE && positive_acc.acc[endIdx] == 0) endIdx++;
     if (endIdx > 4) endIdx = 4;
-    out << (sign ? '-' : '+');
+    out << (sign ? "- " : "+ ");
     for (int idx = startIdx; idx >= endIdx; --idx) {
         bitset<32> bits(positive_acc.acc[idx]);
         int startBit = 31, endBit = 0;
@@ -215,10 +216,10 @@ ostream& operator<<(ostream& out, const LongAccumulator& acc)
             for (int i = startBit; i > 20; --i) out << bits.test(i);
             out << " . ";
             for (int i = 20; i >= endBit; --i) out << bits.test(i);
-            out << ' ';
         } else {
-            out << bits << ' ';
+            for (int i = startBit; i >= endBit; --i) out << bits.test(i);
         }
+        if (idx > endIdx) out << ' ';
     }
     return out;
 }
@@ -226,69 +227,56 @@ ostream& operator<<(ostream& out, const LongAccumulator& acc)
 float LongAccumulator::operator()()
 {
     float_components components;
+
     components.negative = acc[ACC_SIZE - 1] & 0x80000000;
     components.exponent = 0;
     components.mantissa = 0;
-    int k = ACC_SIZE - 1;
-    while (k >= 0) {
-        if (components.negative) {
-            if (acc[k] == 0xFFFFFFFF) k--;
-            else break;
-        } else {
-            if (acc[k] == 0x00000000) k--;
-            else break;
-        }
-    }
-    if (k < 0) {
-        // +0 or -0 depending on the sign which is already set
+
+    LongAccumulator absolute = components.negative ? -*this : *this;
+
+    // Calculate the position of the most significant non-zero word...
+    int word_idx = ACC_SIZE - 1;
+    while (word_idx >= 0 && absolute.acc[word_idx] == 0) word_idx--;
+
+    // Check if zero...
+    if (word_idx < 0) {
         return packToFloat(components);
     }
-    int i = 31;
-    bitset<32> bits(acc[k]);
-    while (i >= 0) {
-        // For positive numbers we look for bit 1, for negative - bit 0
-        if (bits.test(i) ^ components.negative) break;
-        else i--;
+
+    // Calculate the position of the most significant bit...
+    bitset<32> bits(absolute.acc[word_idx]);
+    int bit_idx = 31;
+    while (bit_idx >= 0 && !bits.test(bit_idx)) bit_idx--;
+
+    // Check if subnormal...
+    if (word_idx == 0 && bit_idx < 23) {
+        components.mantissa = absolute.acc[0];
+        return packToFloat(components);
     }
-    // TODO: Implement rounding to preserve accuracy!!!
-    if (k == 0 && i < 23) {
-        // Subnormal - mantissa "narrower than 24b", exponent is 0
-        components.mantissa = acc[0] & 0xFFFFFF;
-        // Needs to be adjusted for sign (inverted if negative)...
+
+    // Calculate the exponent using the inverse of the formula used for "sliding" the mantissa into the accumulator.
+    components.exponent = (word_idx << 5) + bit_idx - 22;
+
+    // Check if infinity...
+    if (components.exponent > 0xFE) {
+        components.exponent = 0xFF;
+        return packToFloat(components);
+    }
+
+    // Extract bits of mantissa from current word...
+    uint32_t mask = ((uint64_t) 1 << (bit_idx + 1)) - 1;
+    components.mantissa = absolute.acc[word_idx] & mask;
+
+    // Extract mantissa and round according to currently selected rounding mode...
+    if (bit_idx > 23) {
+        components.mantissa >>= bit_idx - 23;
+        round(absolute, components, word_idx, bit_idx - 24);
+    } else if (bit_idx == 23) {
+        round(absolute, components, word_idx - 1, 31);
     } else {
-        // Inverse of the formula used for "sliding" the number into the accumulator
-        components.exponent = (k << 5) + i - 22;
-        if (components.exponent > 0xFE) {
-            // Infinity - mantissa is 0, exponent is 0xFF (255)
-            components.exponent = 0xFF;
-        } else {
-            // cout << "k = " << k << " i = " << i << " acc[k] = " << bitset<32>(acc[k]) << endl;
-            uint32_t mask = ((uint64_t) 1 << (i + 1)) - 1;
-            components.mantissa = acc[k] & mask;
-            // cout << "mask = " << bitset<32>(mask) << " acc[k] & mask = " << bitset<32>(components.mantissa) << endl;
-            if (i > 23) {
-                components.mantissa >>= i - 23;
-                // Check remaining bits to round the number...
-            } else {
-                components.mantissa <<= 23 - i;
-                // cout << "current mantissa: " << bitset<24>(components.mantissa) << endl;
-                // cout << "acc[k - 1] = " << bitset<32>(acc[k - 1]) << endl;
-                // cout << "acc[k - 1] >> x = " << bitset<32>(acc[k - 1] >> (i + 9)) << endl;
-                components.mantissa |= acc[k - 1] >> (i + 9);
-                // cout << "final mantissa: " << bitset<24>(components.mantissa) << endl;
-            }
-        }
-    }
-    // cout << "k = " << k << " i = " << i << " exponent = " << components.exponent << " mantissa = " << bitset<24>(components.mantissa) << endl;
-    if (components.negative) {
-        // Invert all bits in mantissa until least significant 1
-        bitset<24> mb(components.mantissa);
-        int i = 0;
-        while (i < 24 && !mb.test(i)) i++;
-        i++; // skip least significant 1
-        for (; i < 24; ++i) mb.set(i, !mb.test(i));
-        // cout << "Inverted: " << mb << endl;
-        components.mantissa = mb.to_ulong();
+        components.mantissa <<= 23 - bit_idx;
+        components.mantissa |= absolute.acc[word_idx - 1] >> (bit_idx + 9);
+        round(absolute, components, word_idx - 1, bit_idx + 8);
     }
 
     return packToFloat(components);
@@ -308,5 +296,49 @@ void LongAccumulator::add(uint32_t idx, uint32_t val, bool negative)
         if (acc[idx] > old) { // underflow
             add(idx + 1, 1, true);
         }
+    }
+}
+
+void LongAccumulator::round(const LongAccumulator& acc, float_components& components, int word_idx, int bit_idx)
+{
+    int rounding_mode = fegetround();
+    // negative if cannot be determined
+    if (rounding_mode < 0) rounding_mode = FE_TONEAREST;
+    bitset<32> bits(acc.acc[word_idx]);
+    if (rounding_mode == FE_TONEAREST) {
+        if (!bits.test(bit_idx)) return; // case 1
+        bool allzero = true;
+        for (int i = bit_idx - 1; allzero && i >= 0; --i) if (bits.test(i)) allzero = false;
+        if (allzero) {
+            for (int i = word_idx - 1; allzero && i >= 0; --i) if (acc.acc[i] > 0) allzero = false;
+        }
+        if (!allzero) {
+            components.mantissa++;
+            return; // case 2
+        }
+        if ((components.mantissa & 0x1) == 0) {
+            return; // case 3a
+        } else {
+            components.mantissa++;
+            return; // case 3b
+        }
+    } else if (rounding_mode == FE_UPWARD && !components.negative ||
+                rounding_mode == FE_DOWNWARD && components.negative) {
+        bool allzero = true;
+        for (int i = bit_idx; allzero && i >= 0; --i) if (bits.test(i)) allzero = false;
+        if (allzero) {
+            for (int i = word_idx - 1; allzero && i >= 0; --i) if (acc.acc[i] > 0) allzero = false;
+        }
+        if (!allzero) {
+            components.mantissa++;
+            return; // case 1
+        } else {
+            return; // case 2
+        }
+    } else {
+        // FE_TOWARDSZERO - always ignores other bits
+        // FE_UPWARD while negative - since mantissa is unsigned, always returns lower value (ignores other bits)
+        // FE_DOWNWARD while positive - same as FE_TOWARDSZERO in this case
+        return;
     }
 }
