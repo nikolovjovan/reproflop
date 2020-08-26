@@ -7,6 +7,7 @@
 #include <chrono>
 #include <pthread.h>
 #include <thread>
+#include <type_traits>
 #include "LongAccumulator.h"
 
 using namespace std;
@@ -410,82 +411,6 @@ void* kernel_sum(void *data)
     pthread_exit(NULL);
 }
 
-void run_parallel()
-{
-    // Get number of available processors
-    const int processor_count = thread::hardware_concurrency();
-    // cout << "Processor count: " << processor_count << endl;
-
-    // Initialize POSIX threads
-    pthread_t *threads = new pthread_t[thread_count];
-    pthread_attr_t attr;
-    int *thread_ids = new int[thread_count];
-
-    start_indices = new int[thread_count];
-    reduction_map = new vector<int>(thread_count);
-    partial_sums = new float[thread_count];
-
-    int err;
-
-    // Create thread attribute object (in case this code is used with compilers other than G++)
-    err = pthread_attr_init(&attr);
-    if (err) {
-        fprintf(stderr, "Error - pthread_attr_init() return code: %d\n", err);
-        exit(EXIT_FAILURE);
-    }
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
-
-    // Create thread barrier
-    err = pthread_barrier_init(&barrier, NULL, thread_count);
-    if (err) {
-        fprintf(stderr, "Error - pthread_barrier_init() return code: %d\n", err);
-        exit(EXIT_FAILURE);
-    }
-
-    // Create threads with affinity
-    cpu_set_t cpus;
-    for (int i = 0; i < thread_count; ++i) {
-        thread_ids[i] = i; // Generate thread ids for easy work sharing
-        (*reduction_map)[i] = i; // Generate initial reduction map for each thread id (same as thread id)
-        CPU_ZERO(&cpus);
-        CPU_SET(i % processor_count, &cpus);
-        pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &cpus);
-        err = pthread_create(&(threads[i]), &attr, kernel_sum, &(thread_ids[i]));
-        if (err) {
-            fprintf(stderr, "Error - pthread_create() return code: %d\n", err);
-            exit(EXIT_FAILURE);
-        }
-    }
-
-    // Wait for other threads to complete
-    for (int i = 0; i < thread_count; ++i) {
-        err = pthread_join(threads[i], NULL);
-        if (err) {
-            fprintf(stderr, "Error - pthread_join() return code: %d\n", err);
-            exit(EXIT_FAILURE);
-        }
-    }
-
-    // Cleanup
-    err = pthread_barrier_destroy(&barrier);
-    if (err) {
-        fprintf(stderr, "Error - pthread_barrier_destroy() return code: %d\n", err);
-        exit(EXIT_FAILURE);
-    }
-
-    err = pthread_attr_destroy(&attr);
-    if (err) {
-        fprintf(stderr, "Error - pthread_attr_destroy() return code: %d\n", err);
-        exit(EXIT_FAILURE);
-    }
-
-    delete[] partial_sums;
-    delete reduction_map;
-    delete[] start_indices;
-    delete[] thread_ids;
-    delete[] threads;
-}
-
 void* kernel_sum_reproducible(void *data)
 {
     int id = *((int*) data);
@@ -562,7 +487,9 @@ void* kernel_sum_reproducible(void *data)
     pthread_exit(NULL);
 }
 
-void run_parallel_reproducible()
+using KERNEL_SUM_FN_PTR = std::add_pointer<void* (void*)>::type;
+
+void run_parallel(KERNEL_SUM_FN_PTR kernel_sum, bool reproducible)
 {
     // Get number of available processors
     const int processor_count = thread::hardware_concurrency();
@@ -575,7 +502,12 @@ void run_parallel_reproducible()
 
     start_indices = new int[thread_count];
     reduction_map = new vector<int>(thread_count);
-    partial_sum_accs = new LongAccumulator[thread_count];
+    if (reproducible) {
+        partial_sum_accs = new LongAccumulator[thread_count];
+    }
+    else {
+        partial_sums = new float[thread_count];
+    }    
 
     int err;
 
@@ -602,7 +534,7 @@ void run_parallel_reproducible()
         CPU_ZERO(&cpus);
         CPU_SET(i % processor_count, &cpus);
         pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &cpus);
-        err = pthread_create(&(threads[i]), &attr, kernel_sum_reproducible, &(thread_ids[i]));
+        err = pthread_create(&(threads[i]), &attr, kernel_sum, &(thread_ids[i]));
         if (err) {
             fprintf(stderr, "Error - pthread_create() return code: %d\n", err);
             exit(EXIT_FAILURE);
@@ -631,7 +563,12 @@ void run_parallel_reproducible()
         exit(EXIT_FAILURE);
     }
 
-    delete[] partial_sum_accs;
+    if (reproducible) {
+        delete[] partial_sum_accs;
+    }
+    else {
+        delete[] partial_sums;
+    }
     delete reduction_map;
     delete[] start_indices;
     delete[] thread_ids;
@@ -655,8 +592,8 @@ int main(int argc, char *argv[])
 
     run_sequential();
     run_sequential_reproducible();
-    run_parallel();
-    run_parallel_reproducible();
+    run_parallel(kernel_sum, false);
+    run_parallel(kernel_sum_reproducible, true);
     
     if (compare(sum_sequential, sum_sequential_reproducible)) {
         cout << "Non-reproducible and reproducible sequential sums do not match!" << endl;
