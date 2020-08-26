@@ -264,13 +264,13 @@ void run_sequential_reproducible()
             // NOTE: This operation results in non-reproducible results. The reason is that
             //       element order is shuffled after every repetition hence rounding errors
             //       and other inherent errors with floating-point arithmetic occur.
-            acc.add((*elements)[i]);
+            acc += (*elements)[i];
         }
         if (run_idx == 0) {
-            sum_sequential_reproducible = acc.roundToFloat();
+            sum_sequential_reproducible = acc();
             time_sequential_reproducible = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
             cout << "Sequential sum (reproducible): " << fixed << setprecision(10) << sum_sequential_reproducible << " (" << scientific << setprecision(10) << sum_sequential_reproducible << ')' << endl;
-        } else if (compare(acc.roundToFloat(), sum_sequential_reproducible)) {
+        } else if (compare(acc(), sum_sequential_reproducible)) {
             cout << "Sequential sum not reproducible after " << run_idx << " runs!" << endl;
             break;
         }
@@ -278,7 +278,7 @@ void run_sequential_reproducible()
             // Shuffle element vector to incur variability
             shuffle(elements->begin(), elements->end(), *shuffle_engine);
             // Reset accumulator
-            acc.clear();
+            acc = 0;
             // auto time_loop = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
             // cout << "Run " << run_idx << ". passed! Time elapsed: " << time_loop << " [us] (" << fixed << setprecision(10) << (float) time_loop / 1000.0 << " [ms])" << endl;
         }
@@ -483,10 +483,10 @@ void* kernel_sum_reproducible(void *data)
         // Synchronize on barrier to get start index
         pthread_barrier_wait(&barrier);
 
-        partial_sum_accs[id].clear();
+        partial_sum_accs[id] = 0;
         int end = id < thread_count - 1 ? start_indices[id + 1] : element_count;
         for (int i = start_indices[id]; i < end; ++i) {
-            partial_sum_accs[id].add((*elements)[i]);
+            partial_sum_accs[id] += (*elements)[i];
         }
 
         // Wait on barrier to synchronize all threads to start parallel reduction
@@ -502,7 +502,7 @@ void* kernel_sum_reproducible(void *data)
         if (step_count > 0) {
             // First reduction step is not based on power of two reduction since thread_count may not be a power of two...
             if (id < thread_count - pow2_count) {
-                partial_sum_accs[(*reduction_map)[id]].add(partial_sum_accs[(*reduction_map)[id + pow2_count]]);
+                partial_sum_accs[(*reduction_map)[id]] += partial_sum_accs[(*reduction_map)[id + pow2_count]];
             }
             // Wait on barrier to synchronize all threads for next reduction step
             pthread_barrier_wait(&barrier);
@@ -510,7 +510,7 @@ void* kernel_sum_reproducible(void *data)
             for (int i = 1; i < step_count; ++i) {
                 pow2_count >>= 1;
                 if (id < pow2_count) {
-                    partial_sum_accs[(*reduction_map)[id]].add(partial_sum_accs[(*reduction_map)[id + pow2_count]]);
+                    partial_sum_accs[(*reduction_map)[id]] += partial_sum_accs[(*reduction_map)[id + pow2_count]];
                 }
                 // Wait on barrier to synchronize all threads for next reduction step
                 pthread_barrier_wait(&barrier);
@@ -521,10 +521,10 @@ void* kernel_sum_reproducible(void *data)
         if (id == 0) {
             if (repeat_counter == 0) {
                 time_parallel_reproducible = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
-                sum_parallel_reproducible = partial_sum_accs[(*reduction_map)[id]].roundToFloat();
+                sum_parallel_reproducible = partial_sum_accs[(*reduction_map)[id]]();
                 result_valid = true;
                 cout << "Parallel sum (reproducible): " << fixed << setprecision(10) << sum_parallel_reproducible << " (" << scientific << setprecision(10) << sum_parallel_reproducible << ')' << endl;
-            } else if (compare(partial_sum_accs[(*reduction_map)[id]].roundToFloat(), sum_parallel_reproducible)) {
+            } else if (compare(partial_sum_accs[(*reduction_map)[id]](), sum_parallel_reproducible)) {
                 cout << "Parallel sum (reproducible) not reproducible after " << repeat_counter << " runs!" << endl;
                 result_valid = false;
             }

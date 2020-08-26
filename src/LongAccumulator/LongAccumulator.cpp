@@ -37,12 +37,28 @@ float packToFloat(float_components components)
     return f;
 }
 
-void LongAccumulator::clear()
+LongAccumulator::LongAccumulator(float f)
 {
-    acc = {};
+    *this += f;
 }
 
-void LongAccumulator::add(float f)
+LongAccumulator& LongAccumulator::operator+=(const LongAccumulator& other)
+{
+    for (uint32_t i = 0; i < ACC_SIZE; ++i) {
+        add(i, other.acc[i], false);
+    }
+    return *this;
+}
+
+LongAccumulator& LongAccumulator::operator-=(const LongAccumulator& other)
+{
+    for (uint32_t i = 0; i < ACC_SIZE; ++i) {
+        add(i, other.acc[i], true);
+    }
+    return *this;
+}
+
+LongAccumulator& LongAccumulator::operator+=(float f)
 {
     // Extract floating-point components - sign, exponent and mantissa
     float_components components = extractComponents(f);
@@ -50,7 +66,6 @@ void LongAccumulator::add(float f)
     uint32_t k = (components.exponent + 22) >> 5;
     // Check if more than one word is affected (split mantissa)
     bool split = ((components.exponent - 1) >> 5) < k;
-    // cout << "k = " << k << " split: " << split << endl;
     // Calculate number of bits in the higher part of the mantissa
     uint32_t hi_width = (components.exponent - 9) % 32;
     if (!split) {
@@ -58,33 +73,157 @@ void LongAccumulator::add(float f)
     } else {
         add(k - 1, components.mantissa << (8 + hi_width), components.negative);
         add(k, components.mantissa >> (24 - hi_width), components.negative);
-        /*// Shift mantissa left for lower bits
-        uint32_t lo = components.mantissa << (8 + hi_width);
-        add(k - 1, lo, components.negative);
-        // Shift mantissa right for higher bits
-        uint32_t hi = components.mantissa >> (24 - hi_width);
-        add(k, hi, components.negative);
-        cout << "hi_width = " << hi_width << " hi: " << bitset<24>(hi) << " lo: ";
-        bitset<32> bits_lo(lo);
-        for (int i = 31; i >= 8 + hi_width; --i) {
-            cout << bits_lo.test(i);
-        }
-        cout << endl;*/
     }
-    // DEBUG INFO REMOVE
-    // print();
-    // cout << "ACC = " << fixed << setprecision(10) << roundToFloat() << endl;
-    // clear();
+    return *this;
 }
 
-void LongAccumulator::add(LongAccumulator &acc)
+LongAccumulator& LongAccumulator::operator-=(float f)
 {
-    for (uint32_t i = 0; i < ACC_SIZE; ++i) {
-        add(i, acc.acc[i], false);
-    }
+    return *this += -f;
 }
 
-float LongAccumulator::roundToFloat()
+LongAccumulator& LongAccumulator::operator=(float f)
+{
+    acc = {};
+    return f == 0 ? *this : *this += f;
+}
+
+LongAccumulator LongAccumulator::operator+() const
+{
+    return *this;
+}
+
+LongAccumulator LongAccumulator::operator-() const
+{
+    LongAccumulator res;
+    res -= *this;
+    return res;
+}
+
+LongAccumulator operator+(LongAccumulator acc, const LongAccumulator& other)
+{
+    return acc += other;
+}
+
+LongAccumulator operator-(LongAccumulator acc, const LongAccumulator& other)
+{
+    return acc -= other;
+}
+
+LongAccumulator operator+(LongAccumulator acc, float f)
+{
+    return acc += f;
+}
+
+LongAccumulator operator-(LongAccumulator acc, float f)
+{
+    return acc -= f;
+}
+
+bool operator==(const LongAccumulator& l, const LongAccumulator& r)
+{
+    for (int i = 0; i < ACC_SIZE; ++i) {
+        if (l.acc[i] != r.acc[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool operator!=(const LongAccumulator& l, const LongAccumulator& r)
+{
+    return !(l == r);
+}
+
+bool operator< (const LongAccumulator& l, const LongAccumulator& r)
+{
+    bool sign_l = l.acc[ACC_SIZE - 1] & 0x80000000;
+    bool sign_r = r.acc[ACC_SIZE - 1] & 0x80000000;
+    if (sign_l && !sign_r) return true;
+    else if (!sign_l && sign_r) return false;
+    LongAccumulator positive_l = sign_l ? -l : l;
+    LongAccumulator positive_r = sign_r ? -r : r;
+    int i = ACC_SIZE - 1;
+    while (i >= 0 && positive_l.acc[i] == positive_r.acc[i]) i--;
+    if (i < 0) return false; // equal
+    return sign_l ? positive_l.acc[i] > positive_r.acc[i] : positive_l.acc[i] < positive_r.acc[i]; // for negative numbers invert
+}
+
+bool operator> (const LongAccumulator& l, const LongAccumulator& r)
+{
+    return r < l;
+}
+
+bool operator<=(const LongAccumulator& l, const LongAccumulator& r)
+{
+    return !(l > r);
+}
+
+bool operator>=(const LongAccumulator& l, const LongAccumulator& r)
+{
+    return !(l < r);
+}
+
+bool operator==(const LongAccumulator& l, float r)
+{
+    return l == LongAccumulator(r);
+}
+
+bool operator!=(const LongAccumulator& l, float r)
+{
+    return l != LongAccumulator(r);
+}
+
+bool operator< (const LongAccumulator& l, float r)
+{
+    return l < LongAccumulator(r);
+}
+
+bool operator> (const LongAccumulator& l, float r)
+{
+    return l > LongAccumulator(r);
+}
+
+bool operator<=(const LongAccumulator& l, float r)
+{
+    return l <= LongAccumulator(r);
+}
+
+bool operator>=(const LongAccumulator& l, float r)
+{
+    return l >= LongAccumulator(r);
+}
+
+ostream& operator<<(ostream& out, const LongAccumulator& acc)
+{
+    bool sign = acc.acc[ACC_SIZE - 1] & 0x80000000;
+    LongAccumulator positive_acc = sign ? -acc : acc;
+    int startIdx = ACC_SIZE - 1, endIdx = 0;
+    while (startIdx >= 0 && positive_acc.acc[startIdx] == 0) startIdx--;
+    if (startIdx < 4) startIdx = 4;
+    while (endIdx < ACC_SIZE && positive_acc.acc[endIdx] == 0) endIdx++;
+    if (endIdx > 4) endIdx = 4;
+    out << (sign ? '-' : '+');
+    for (int idx = startIdx; idx >= endIdx; --idx) {
+        bitset<32> bits(positive_acc.acc[idx]);
+        int startBit = 31, endBit = 0;
+        if (idx == startIdx) while (startBit >= 0 && !bits.test(startBit)) startBit--;
+        if (idx == endIdx) while (endBit < 32 && !bits.test(endBit)) endBit++;
+        if (idx == 4) {
+            if (startBit < 21) startBit = 21; // include first bit before .
+            if (endBit > 20) endBit = 20; // include first bit after .
+            for (int i = startBit; i > 20; --i) out << bits.test(i);
+            out << " . ";
+            for (int i = 20; i >= endBit; --i) out << bits.test(i);
+            out << ' ';
+        } else {
+            out << bits << ' ';
+        }
+    }
+    return out;
+}
+
+float LongAccumulator::operator()()
 {
     float_components components;
     components.negative = acc[ACC_SIZE - 1] & 0x80000000;
@@ -102,7 +241,6 @@ float LongAccumulator::roundToFloat()
     }
     if (k < 0) {
         // +0 or -0 depending on the sign which is already set
-        // exponent and mantissa have values 0
         return packToFloat(components);
     }
     int i = 31;
@@ -154,43 +292,6 @@ float LongAccumulator::roundToFloat()
     }
 
     return packToFloat(components);
-}
-
-void LongAccumulator::print()
-{
-    bool negative = acc[ACC_SIZE - 1] & 0x80000000;
-    int start = ACC_SIZE - 1;
-    while (start >= 0) {
-        if (negative) {
-            if (acc[start] == 0xFFFFFFFF) start--;
-            else break;
-        } else {
-            if (acc[start] == 0x00000000) start--;
-            else break;
-        }
-    }
-    int end = 0;
-    while (end < ACC_SIZE) {
-        if (acc[end] == 0x00000000) end++;
-        else break;
-    }
-
-    for (int i = start; i >= end; --i) {
-        bitset<32> bits(acc[i]);
-        if (i == 4) {
-            for (int i = 31; i > RADIX_LOCATION; --i) {
-                cout << bits.test(i);
-            }
-            cout << " . ";
-            for (int i = RADIX_LOCATION; i >= 0; --i) {
-                cout << bits.test(i);
-            }
-            cout << ' ';
-        } else {
-            cout << bits << ' '; // << endl;
-        }
-    }
-    cout << endl;
 }
 
 void LongAccumulator::add(uint32_t idx, uint32_t val, bool negative)
