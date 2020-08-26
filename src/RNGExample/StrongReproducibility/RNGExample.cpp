@@ -35,6 +35,7 @@ int exponent_min    = DEFAULT_EXPONENT_MIN_VALUE;
 int exponent_max    = DEFAULT_EXPONENT_MAX_VALUE;
 int repeat_count    = DEFAULT_REPEAT_COUNT;
 bool print_elements = false;
+bool perf_test      = false;
 
 // Shared variables
 
@@ -62,6 +63,7 @@ void print_usage(char program_name[])
     cout << "  -h <num>: Uses <num> as exponent maximum value (inclusive) (default value: 10)" << endl;
     cout << "  -r <num>: Repeats the execution of both implementations <num> times for reproducibility study (default value: 100)" << endl;
     cout << "  -p: Print generated numbers before analysis" << endl;
+    cout << "  -!: Split elements evenly between threads for performance testing" << endl;
     cout << "  -?: Print this message" << endl;
 }
 
@@ -159,6 +161,9 @@ void parse_parameters(int argc, char *argv[])
             case 'p':
                 print_elements = true;
                 break;
+            case '!':
+                perf_test = true;
+                break;
             case '?':
                 print_usage(argv[0]);
                 exit(EXIT_SUCCESS);
@@ -183,6 +188,7 @@ void print_parameters()
     cout << "  Exponent maximum value:   " << exponent_max << endl;
     cout << "  Repeat count:             " << repeat_count << endl;
     cout << "  Print elements:           " << (print_elements ? "YES" : "NO") << endl;
+    cout << "  Performance test:         " << (perf_test ? "YES" : "NO") << endl;
 }
 
 void generate_elements()
@@ -293,31 +299,38 @@ void run_sequential_reproducible()
 
 void generate_start_indices()
 {
+    if (perf_test) {
+        int blk_size = (element_count + thread_count - 1) / thread_count;
+        for (int i = 0; i < thread_count; ++i) {
+            start_indices[i] = i * blk_size;
+        }
+        return;
+    }
     int min = 1;
     int max = element_count - thread_count * min;
     if (max == 0) {
         for (int i = 0; i < thread_count; ++i) {
             start_indices[i] = i;
         }
-    } else {
-        random_device rd;
-        mt19937 gen(rd());
-        uniform_int_distribution<int> size_dist(0, max);
-        start_indices[0] = 0;
-        for (int i = 1; i < thread_count; ++i) {
-            start_indices[i] = size_dist(gen);
-        }
-        sort(start_indices, start_indices + thread_count);
-        for (int i = 1; i < thread_count; ++i) {
-            start_indices[i - 1] = start_indices[i] - start_indices[i - 1] + min;
-        }
-        start_indices[thread_count - 1] = max - start_indices[thread_count - 1] + min;
-        int size = 0;
-        for (int i = 0; i < thread_count; ++i) {
-            int tmp = start_indices[i];
-            start_indices[i] = size;
-            size += tmp;
-        }
+        return;
+    }
+    random_device rd;
+    mt19937 gen(rd());
+    uniform_int_distribution<int> size_dist(0, max);
+    start_indices[0] = 0;
+    for (int i = 1; i < thread_count; ++i) {
+        start_indices[i] = size_dist(gen);
+    }
+    sort(start_indices, start_indices + thread_count);
+    for (int i = 1; i < thread_count; ++i) {
+        start_indices[i - 1] = start_indices[i] - start_indices[i - 1] + min;
+    }
+    start_indices[thread_count - 1] = max - start_indices[thread_count - 1] + min;
+    int size = 0;
+    for (int i = 0; i < thread_count; ++i) {
+        int tmp = start_indices[i];
+        start_indices[i] = size;
+        size += tmp;
     }
 }
 
