@@ -313,14 +313,11 @@ void LongAccumulator::round(const LongAccumulator& acc, float_components& compon
             for (int i = word_idx - 1; allzero && i >= 0; --i) if (acc.acc[i] > 0) allzero = false;
         }
         if (!allzero) {
-            components.mantissa++;
-            return; // case 2
-        }
-        if ((components.mantissa & 0x1) == 0) {
+            components.mantissa++; // case 2, need to check for overflow
+        } else if ((components.mantissa & 0x1) == 0) {
             return; // case 3a
         } else {
-            components.mantissa++;
-            return; // case 3b
+            components.mantissa++; // case 3b, need to check for overflow
         }
     } else if (rounding_mode == FE_UPWARD && !components.negative ||
                 rounding_mode == FE_DOWNWARD && components.negative) {
@@ -330,8 +327,7 @@ void LongAccumulator::round(const LongAccumulator& acc, float_components& compon
             for (int i = word_idx - 1; allzero && i >= 0; --i) if (acc.acc[i] > 0) allzero = false;
         }
         if (!allzero) {
-            components.mantissa++;
-            return; // case 1
+            components.mantissa++; // case 1, need to check for overflow
         } else {
             return; // case 2
         }
@@ -340,5 +336,14 @@ void LongAccumulator::round(const LongAccumulator& acc, float_components& compon
         // FE_UPWARD while negative - since mantissa is unsigned, always returns lower value (ignores other bits)
         // FE_DOWNWARD while positive - same as FE_TOWARDSZERO in this case
         return;
+    }
+    // Check if rounding caused overflow...
+    if (components.mantissa > 0x7FFFFF) {
+        components.mantissa >>= 1;
+        components.exponent++;
+        if (components.exponent > 0xFE) {
+            components.exponent = 0xFF;
+            components.mantissa = 0;
+        }
     }
 }
