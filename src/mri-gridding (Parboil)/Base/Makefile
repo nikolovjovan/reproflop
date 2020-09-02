@@ -1,0 +1,15 @@
+# C++ compiler
+CC			= g++
+CC_FLAGS	= -fopenmp -lm -O2
+SRC			= main.cpp CPU_kernels.cpp
+TARGET		= mri-gridding
+
+.PHONY: all clean
+
+all: $(TARGET)
+
+$(TARGET): $(SRC) Makefile
+	$(CC) $(CC_FLAGS) $(SRC) -o $(TARGET)
+
+clean:
+	rm -f $(TARGET)

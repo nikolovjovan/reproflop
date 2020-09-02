@@ -1,12 +1,12 @@
-#include <iostream>
-#include <iomanip>
-#include <cstring>
-#include <random>
-#include <vector>
 #include <algorithm>
 #include <chrono>
+#include <cstring>
+#include <iomanip>
+#include <iostream>
 #include <pthread.h>
+#include <random>
 #include <thread>
+#include <vector>
 
 using namespace std;
 
@@ -27,12 +27,12 @@ constexpr int DEFAULT_REPEAT_COUNT = 100;
 
 // Program parameters
 
-int thread_count    = DEFAULT_THREAD_COUNT;
-int element_count   = DEFAULT_ELEMENT_COUNT;
-uint32_t seed       = DEFAULT_SEED;
-int exponent_min    = DEFAULT_EXPONENT_MIN_VALUE;
-int exponent_max    = DEFAULT_EXPONENT_MAX_VALUE;
-int repeat_count    = DEFAULT_REPEAT_COUNT;
+int thread_count = DEFAULT_THREAD_COUNT;
+int element_count = DEFAULT_ELEMENT_COUNT;
+uint32_t seed = DEFAULT_SEED;
+int exponent_min = DEFAULT_EXPONENT_MIN_VALUE;
+int exponent_max = DEFAULT_EXPONENT_MAX_VALUE;
+int repeat_count = DEFAULT_REPEAT_COUNT;
 bool print_elements = false;
 
 // Shared variables
@@ -72,95 +72,97 @@ void parse_parameters(int argc, char *argv[])
         }
         int n;
         switch (argv[i][1]) {
-            case 't':
-                if (i + 1 == argc) {
-                    cout << "Thread count not specified!" << endl;
-                    print_usage(argv[0]);
-                    exit(EXIT_FAILURE);
-                }
-                n = atoi(argv[++i]);
-                if (n < 1) {
-                    cout << "Invalid thread count: " << n << "! Using default value: " << DEFAULT_THREAD_COUNT << endl;
-                } else {
-                    thread_count = n;
-                }
-                break;
-            case 'n':
-                if (i + 1 == argc) {
-                    cout << "Element count not specified!" << endl;
-                    print_usage(argv[0]);
-                    exit(EXIT_FAILURE);
-                }
-                n = atoi(argv[++i]);
-                if (n < 1) {
-                    cout << "Invalid element count: " << n << "! Using default value: " << DEFAULT_ELEMENT_COUNT << endl;
-                } else {
-                    element_count = n;
-                }
-                break;
-            case 's':
-                if (i + 1 == argc) {
-                    cout << "Seed not specified!" << endl;
-                    print_usage(argv[0]);
-                    exit(EXIT_FAILURE);
-                }
-                n = atoi(argv[++i]);
-                if (n == 0) {
-                    random_device rd;
-                    seed = rd();
-                    cout << "Special seed value: 0. Generated random seed: " << seed << endl;
-                } else {
-                    seed = n;
-                }
-                break;
-            case 'l':
-                if (i + 1 == argc) {
-                    cout << "Exponent minimum value not specified!" << endl;
-                    print_usage(argv[0]);
-                    exit(EXIT_FAILURE);
-                }
-                n = atoi(argv[++i]);
-                if (n < EXPONENT_MIN_VALUE) {
-                    cout << "Invalid exponent minimum value: " << n << "! Using default value: " << DEFAULT_EXPONENT_MIN_VALUE << endl;
-                } else {
-                    exponent_min = n;
-                }
-                break;
-            case 'h':
-                if (i + 1 == argc) {
-                    cout << "Exponent maximum value not specified!" << endl;
-                    print_usage(argv[0]);
-                    exit(EXIT_FAILURE);
-                }
-                n = atoi(argv[++i]);
-                if (n > EXPONENT_MAX_VALUE) {
-                    cout << "Invalid exponent maximum value: " << n << "! Using default value: " << DEFAULT_EXPONENT_MAX_VALUE << endl;
-                } else {
-                    exponent_max = n;
-                }
-                break;
-            case 'r':
-                if (i + 1 == argc) {
-                    cout << "Repeat count not specified!" << endl;
-                    print_usage(argv[0]);
-                    exit(EXIT_FAILURE);
-                }
-                n = atoi(argv[++i]);
-                if (n < 0) {
-                    cout << "Invalid repeat count: " << n << "! Using default value: " << DEFAULT_REPEAT_COUNT << endl;
-                } else {
-                    repeat_count = n;
-                }
-                break;
-            case 'p':
-                print_elements = true;
-                break;
-            case '?':
+        case 't':
+            if (i + 1 == argc) {
+                cout << "Thread count not specified!" << endl;
                 print_usage(argv[0]);
-                exit(EXIT_SUCCESS);
-            default:
-                cout << "Invalid option: \"" << argv[i] << "\"!" << endl;
                 exit(EXIT_FAILURE);
+            }
+            n = atoi(argv[++i]);
+            if (n < 1) {
+                cout << "Invalid thread count: " << n << "! Using default value: " << DEFAULT_THREAD_COUNT << endl;
+            } else {
+                thread_count = n;
+            }
+            break;
+        case 'n':
+            if (i + 1 == argc) {
+                cout << "Element count not specified!" << endl;
+                print_usage(argv[0]);
+                exit(EXIT_FAILURE);
+            }
+            n = atoi(argv[++i]);
+            if (n < 1) {
+                cout << "Invalid element count: " << n << "! Using default value: " << DEFAULT_ELEMENT_COUNT << endl;
+            } else {
+                element_count = n;
+            }
+            break;
+        case 's':
+            if (i + 1 == argc) {
+                cout << "Seed not specified!" << endl;
+                print_usage(argv[0]);
+                exit(EXIT_FAILURE);
+            }
+            n = atoi(argv[++i]);
+            if (n == 0) {
+                random_device rd;
+                seed = rd();
+                cout << "Special seed value: 0. Generated random seed: " << seed << endl;
+            } else {
+                seed = n;
+            }
+            break;
+        case 'l':
+            if (i + 1 == argc) {
+                cout << "Exponent minimum value not specified!" << endl;
+                print_usage(argv[0]);
+                exit(EXIT_FAILURE);
+            }
+            n = atoi(argv[++i]);
+            if (n < EXPONENT_MIN_VALUE) {
+                cout << "Invalid exponent minimum value: " << n
+                     << "! Using default value: " << DEFAULT_EXPONENT_MIN_VALUE << endl;
+            } else {
+                exponent_min = n;
+            }
+            break;
+        case 'h':
+            if (i + 1 == argc) {
+                cout << "Exponent maximum value not specified!" << endl;
+                print_usage(argv[0]);
+                exit(EXIT_FAILURE);
+            }
+            n = atoi(argv[++i]);
+            if (n > EXPONENT_MAX_VALUE) {
+                cout << "Invalid exponent maximum value: " << n
+                     << "! Using default value: " << DEFAULT_EXPONENT_MAX_VALUE << endl;
+            } else {
+                exponent_max = n;
+            }
+            break;
+        case 'r':
+            if (i + 1 == argc) {
+                cout << "Repeat count not specified!" << endl;
+                print_usage(argv[0]);
+                exit(EXIT_FAILURE);
+            }
+            n = atoi(argv[++i]);
+            if (n < 0) {
+                cout << "Invalid repeat count: " << n << "! Using default value: " << DEFAULT_REPEAT_COUNT << endl;
+            } else {
+                repeat_count = n;
+            }
+            break;
+        case 'p':
+            print_elements = true;
+            break;
+        case '?':
+            print_usage(argv[0]);
+            exit(EXIT_SUCCESS);
+        default:
+            cout << "Invalid option: \"" << argv[i] << "\"!" << endl;
+            exit(EXIT_FAILURE);
         }
     }
     if (thread_count > element_count) {
@@ -199,7 +201,8 @@ void generate_elements()
         memcpy(&number, &bits, sizeof(uint32_t));
         (*elements)[i] = number;
         if (print_elements) {
-            cout << i + 1 << ". element: " << fixed << setprecision(10) << number << " (" << scientific << setprecision(10) << number << ')' << endl;
+            cout << i + 1 << ". element: " << fixed << setprecision(10) << number << " (" << scientific
+                 << setprecision(10) << number << ')' << endl;
             if (number > 0) {
                 positive_count++;
             } else {
@@ -214,14 +217,6 @@ void generate_elements()
     }
 
     cout << "Successfully generated " << element_count << " random floating-point numbers." << endl;
-}
-
-int compare(float f1, float f2)
-{
-    // TODO: Implement floating-point comparison for 6-7 significant digits...
-    if (f1 < f2) return -1;
-    else if (f1 > f2) return 1;
-    return 0;
 }
 
 void run_sequential()
@@ -242,17 +237,18 @@ void run_sequential()
         if (run_idx == 0) {
             sum_sequential = sum;
             time_sequential = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
-            cout << "Sequential sum: " << fixed << setprecision(10) << sum_sequential << " (" << scientific << setprecision(10) << sum_sequential << ')' << endl;
-        } else if (compare(sum, sum_sequential)) {
+            cout << "Sequential sum: " << fixed << setprecision(10) << sum_sequential << " (" << scientific
+                 << setprecision(10) << sum_sequential << ')' << endl;
+        } else if (sum == sum_sequential) {
             cout << "Sequential sum not reproducible after " << run_idx << " runs!" << endl;
             break;
         }
     }
 }
 
-void* kernel_sum(void *data)
+void *kernel_sum(void *data)
 {
-    int id = *((int*) data);
+    int id = *((int *) data);
     chrono::steady_clock::time_point start;
     for (int repeat_counter = 0; repeat_counter <= repeat_count; ++repeat_counter) {
         if (id == 0 && repeat_counter == 0) {
@@ -277,13 +273,15 @@ void* kernel_sum(void *data)
         }
         pow2_count >>= 1;
         if (step_count > 0) {
-            // First reduction step is not based on power of two reduction since thread_count may not be a power of two...
+            // First reduction step is not based on power of two reduction since thread_count may not be a power of
+            // two...
             if (id < thread_count - pow2_count) {
                 partial_sums[id] += partial_sums[id + pow2_count];
             }
             // Wait on barrier to synchronize all threads for next reduction step
             pthread_barrier_wait(&barrier);
-            // The rest of the steps are simple power of two reduction. There are now pow2_count partial sums to reduce...
+            // The rest of the steps are simple power of two reduction. There are now pow2_count partial sums to
+            // reduce...
             for (int i = 1; i < step_count; ++i) {
                 pow2_count >>= 1;
                 if (id < pow2_count) {
@@ -297,11 +295,13 @@ void* kernel_sum(void *data)
         // Check results
         if (id == 0) {
             if (repeat_counter == 0) {
-                time_parallel = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
+                time_parallel =
+                    chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
                 sum_parallel = partial_sums[id];
                 result_valid = true;
-                cout << "Parallel sum: " << fixed << setprecision(10) << sum_parallel << " (" << scientific << setprecision(10) << sum_parallel << ')' << endl;
-            } else if (compare(partial_sums[id], sum_parallel)) {
+                cout << "Parallel sum: " << fixed << setprecision(10) << sum_parallel << " (" << scientific
+                     << setprecision(10) << sum_parallel << ')' << endl;
+            } else if (partial_sums[id] == sum_parallel) {
                 cout << "Parallel sum not reproducible after " << repeat_counter << " runs!" << endl;
                 result_valid = false;
             }
@@ -309,7 +309,8 @@ void* kernel_sum(void *data)
 
         // Wait on barrier to synchronize all threads for next repetition
         pthread_barrier_wait(&barrier);
-        if (!result_valid) break;
+        if (!result_valid)
+            break;
     }
     pthread_exit(NULL);
 }
@@ -401,8 +402,10 @@ int main(int argc, char *argv[])
     run_sequential();
     run_parallel();
 
-    cout << "Sequential execution time: " << time_sequential << " [us] (" << fixed << setprecision(10) << (float) time_sequential / 1000.0 << " [ms])" << endl;
-    cout << "Parallel execution time: " << time_parallel << " [us] (" << fixed << setprecision(10) << (float) time_parallel / 1000.0 << " [ms])" << endl;
+    cout << "Sequential execution time: " << time_sequential << " [us] (" << fixed << setprecision(10)
+         << (float) time_sequential / 1000.0 << " [ms])" << endl;
+    cout << "Parallel execution time: " << time_parallel << " [us] (" << fixed << setprecision(10)
+         << (float) time_parallel / 1000.0 << " [ms])" << endl;
     cout << "Speedup: " << fixed << setprecision(10) << ((float) time_sequential) / ((float) time_parallel) << endl;
 
     cleanup();

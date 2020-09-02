@@ -29,9 +29,8 @@ float_components extractComponents(float f)
 
 float packToFloat(float_components components)
 {
-    uint32_t tmp = (components.negative ? 0x80000000 : 0x00000000) |
-        (components.exponent << 23) |
-        (components.mantissa & 0x7FFFFF);
+    uint32_t tmp = (components.negative ? 0x80000000 : 0x00000000) | (components.exponent << 23) |
+                   (components.mantissa & 0x7FFFFF);
     float f;
     static_assert(sizeof(uint32_t) == sizeof(float));
     memcpy(&f, &tmp, sizeof(uint32_t));
@@ -43,7 +42,7 @@ LongAccumulator::LongAccumulator(float f)
     *this += f;
 }
 
-LongAccumulator& LongAccumulator::operator+=(const LongAccumulator& other)
+LongAccumulator &LongAccumulator::operator+=(const LongAccumulator &other)
 {
     for (uint32_t i = 0; i < ACC_SIZE; ++i) {
         add(i, other.acc[i], false);
@@ -51,7 +50,7 @@ LongAccumulator& LongAccumulator::operator+=(const LongAccumulator& other)
     return *this;
 }
 
-LongAccumulator& LongAccumulator::operator-=(const LongAccumulator& other)
+LongAccumulator &LongAccumulator::operator-=(const LongAccumulator &other)
 {
     for (uint32_t i = 0; i < ACC_SIZE; ++i) {
         add(i, other.acc[i], true);
@@ -59,7 +58,7 @@ LongAccumulator& LongAccumulator::operator-=(const LongAccumulator& other)
     return *this;
 }
 
-LongAccumulator& LongAccumulator::operator+=(float f)
+LongAccumulator &LongAccumulator::operator+=(float f)
 {
     // Extract floating-point components - sign, exponent and mantissa
     float_components components = extractComponents(f);
@@ -78,12 +77,12 @@ LongAccumulator& LongAccumulator::operator+=(float f)
     return *this;
 }
 
-LongAccumulator& LongAccumulator::operator-=(float f)
+LongAccumulator &LongAccumulator::operator-=(float f)
 {
     return *this += -f;
 }
 
-LongAccumulator& LongAccumulator::operator=(float f)
+LongAccumulator &LongAccumulator::operator=(float f)
 {
     acc = {};
     return f == 0 ? *this : *this += f;
@@ -101,12 +100,12 @@ LongAccumulator LongAccumulator::operator-() const
     return res;
 }
 
-LongAccumulator operator+(LongAccumulator acc, const LongAccumulator& other)
+LongAccumulator operator+(LongAccumulator acc, const LongAccumulator &other)
 {
     return acc += other;
 }
 
-LongAccumulator operator-(LongAccumulator acc, const LongAccumulator& other)
+LongAccumulator operator-(LongAccumulator acc, const LongAccumulator &other)
 {
     return acc -= other;
 }
@@ -121,7 +120,7 @@ LongAccumulator operator-(LongAccumulator acc, float f)
     return acc -= f;
 }
 
-bool operator==(const LongAccumulator& l, const LongAccumulator& r)
+bool operator==(const LongAccumulator &l, const LongAccumulator &r)
 {
     for (int i = 0; i < ACC_SIZE; ++i) {
         if (l.acc[i] != r.acc[i]) {
@@ -131,95 +130,131 @@ bool operator==(const LongAccumulator& l, const LongAccumulator& r)
     return true;
 }
 
-bool operator!=(const LongAccumulator& l, const LongAccumulator& r)
+bool operator!=(const LongAccumulator &l, const LongAccumulator &r)
 {
     return !(l == r);
 }
 
-bool operator< (const LongAccumulator& l, const LongAccumulator& r)
+bool operator<(const LongAccumulator &l, const LongAccumulator &r)
 {
     bool sign_l = l.acc[ACC_SIZE - 1] & 0x80000000;
     bool sign_r = r.acc[ACC_SIZE - 1] & 0x80000000;
-    if (sign_l && !sign_r) return true;
-    else if (!sign_l && sign_r) return false;
+    if (sign_l && !sign_r) {
+        return true;
+    } else if (!sign_l && sign_r) {
+        return false;
+    }
     LongAccumulator positive_l = sign_l ? -l : l;
     LongAccumulator positive_r = sign_r ? -r : r;
     int i = ACC_SIZE - 1;
-    while (i >= 0 && positive_l.acc[i] == positive_r.acc[i]) i--;
-    if (i < 0) return false; // equal
-    return sign_l ? positive_l.acc[i] > positive_r.acc[i] : positive_l.acc[i] < positive_r.acc[i]; // for negative numbers invert
+    while (i >= 0 && positive_l.acc[i] == positive_r.acc[i]) {
+        i--;
+    }
+    if (i < 0) {
+        return false; // equal
+    }
+    return sign_l ? positive_l.acc[i] > positive_r.acc[i]
+                  : positive_l.acc[i] < positive_r.acc[i]; // for negative numbers invert
 }
 
-bool operator> (const LongAccumulator& l, const LongAccumulator& r)
+bool operator>(const LongAccumulator &l, const LongAccumulator &r)
 {
     return r < l;
 }
 
-bool operator<=(const LongAccumulator& l, const LongAccumulator& r)
+bool operator<=(const LongAccumulator &l, const LongAccumulator &r)
 {
     return !(l > r);
 }
 
-bool operator>=(const LongAccumulator& l, const LongAccumulator& r)
+bool operator>=(const LongAccumulator &l, const LongAccumulator &r)
 {
     return !(l < r);
 }
 
-bool operator==(const LongAccumulator& l, float r)
+bool operator==(const LongAccumulator &l, float r)
 {
     return l == LongAccumulator(r);
 }
 
-bool operator!=(const LongAccumulator& l, float r)
+bool operator!=(const LongAccumulator &l, float r)
 {
     return l != LongAccumulator(r);
 }
 
-bool operator< (const LongAccumulator& l, float r)
+bool operator<(const LongAccumulator &l, float r)
 {
     return l < LongAccumulator(r);
 }
 
-bool operator> (const LongAccumulator& l, float r)
+bool operator>(const LongAccumulator &l, float r)
 {
     return l > LongAccumulator(r);
 }
 
-bool operator<=(const LongAccumulator& l, float r)
+bool operator<=(const LongAccumulator &l, float r)
 {
     return l <= LongAccumulator(r);
 }
 
-bool operator>=(const LongAccumulator& l, float r)
+bool operator>=(const LongAccumulator &l, float r)
 {
     return l >= LongAccumulator(r);
 }
 
-ostream& operator<<(ostream& out, const LongAccumulator& acc)
+ostream &operator<<(ostream &out, const LongAccumulator &acc)
 {
     bool sign = acc.acc[ACC_SIZE - 1] & 0x80000000;
     LongAccumulator positive_acc = sign ? -acc : acc;
     int startIdx = ACC_SIZE - 1, endIdx = 0;
-    while (startIdx >= 0 && positive_acc.acc[startIdx] == 0) startIdx--;
-    if (startIdx < 4) startIdx = 4;
-    while (endIdx < ACC_SIZE && positive_acc.acc[endIdx] == 0) endIdx++;
-    if (endIdx > 4) endIdx = 4;
+    while (startIdx >= 0 && positive_acc.acc[startIdx] == 0) {
+        startIdx--;
+    }
+    if (startIdx < 4) {
+        startIdx = 4;
+    }
+    while (endIdx < ACC_SIZE && positive_acc.acc[endIdx] == 0) {
+        endIdx++;
+    }
+    if (endIdx > 4) {
+        endIdx = 4;
+    }
     out << (sign ? "- " : "+ ");
     for (int idx = startIdx; idx >= endIdx; --idx) {
         bitset<32> bits(positive_acc.acc[idx]);
         int startBit = 31, endBit = 0;
-        if (idx == startIdx) while (startBit >= 0 && !bits.test(startBit)) startBit--;
-        if (idx == endIdx) while (endBit < 32 && !bits.test(endBit)) endBit++;
-        if (idx == 4) {
-            if (startBit < 21) startBit = 21; // include first bit before .
-            if (endBit > 20) endBit = 20; // include first bit after .
-            for (int i = startBit; i > 20; --i) out << bits.test(i);
-            out << " . ";
-            for (int i = 20; i >= endBit; --i) out << bits.test(i);
-        } else {
-            for (int i = startBit; i >= endBit; --i) out << bits.test(i);
+        if (idx == startIdx) {
+            while (startBit >= 0 && !bits.test(startBit)) {
+                startBit--;
+            }
         }
-        if (idx > endIdx) out << ' ';
+        if (idx == endIdx) {
+            while (endBit < 32 && !bits.test(endBit)) {
+                endBit++;
+            }
+        }
+        if (idx == 4) {
+            if (startBit < 21) {
+                startBit = 21; // include first bit before .
+            }
+            if (endBit > 20) {
+                endBit = 20; // include first bit after .
+            }
+            for (int i = startBit; i > 20; --i) {
+                out << bits.test(i);
+            }
+            out << " . ";
+            for (int i = 20; i >= endBit; --i) {
+                out << bits.test(i);
+            }
+        } else {
+            for (int i = startBit; i >= endBit; --i) {
+                out << bits.test(i);
+            }
+        }
+        if (idx > endIdx) {
+            out << ' ';
+        }
     }
     return out;
 }
@@ -236,7 +271,9 @@ float LongAccumulator::operator()()
 
     // Calculate the position of the most significant non-zero word...
     int word_idx = ACC_SIZE - 1;
-    while (word_idx >= 0 && absolute.acc[word_idx] == 0) word_idx--;
+    while (word_idx >= 0 && absolute.acc[word_idx] == 0) {
+        word_idx--;
+    }
 
     // Check if zero...
     if (word_idx < 0) {
@@ -246,7 +283,9 @@ float LongAccumulator::operator()()
     // Calculate the position of the most significant bit...
     bitset<32> bits(absolute.acc[word_idx]);
     int bit_idx = 31;
-    while (bit_idx >= 0 && !bits.test(bit_idx)) bit_idx--;
+    while (bit_idx >= 0 && !bits.test(bit_idx)) {
+        bit_idx--;
+    }
 
     // Check if subnormal...
     if (word_idx == 0 && bit_idx < 23) {
@@ -284,7 +323,9 @@ float LongAccumulator::operator()()
 
 void LongAccumulator::add(uint32_t idx, uint32_t val, bool negative)
 {
-    if (idx < 0 || idx >= ACC_SIZE) return;
+    if (idx < 0 || idx >= ACC_SIZE) {
+        return;
+    }
     uint32_t old = acc[idx];
     if (!negative) {
         acc[idx] += val;
@@ -299,18 +340,30 @@ void LongAccumulator::add(uint32_t idx, uint32_t val, bool negative)
     }
 }
 
-void LongAccumulator::round(const LongAccumulator& acc, float_components& components, int word_idx, int bit_idx)
+void LongAccumulator::round(const LongAccumulator &acc, float_components &components, int word_idx, int bit_idx)
 {
     int rounding_mode = fegetround();
     // negative if cannot be determined
-    if (rounding_mode < 0) rounding_mode = FE_TONEAREST;
+    if (rounding_mode < 0) {
+        rounding_mode = FE_TONEAREST;
+    }
     bitset<32> bits(acc.acc[word_idx]);
     if (rounding_mode == FE_TONEAREST) {
-        if (!bits.test(bit_idx)) return; // case 1
+        if (!bits.test(bit_idx)) {
+            return; // case 1
+        }
         bool allzero = true;
-        for (int i = bit_idx - 1; allzero && i >= 0; --i) if (bits.test(i)) allzero = false;
+        for (int i = bit_idx - 1; allzero && i >= 0; --i) {
+            if (bits.test(i)) {
+                allzero = false;
+            }
+        }
         if (allzero) {
-            for (int i = word_idx - 1; allzero && i >= 0; --i) if (acc.acc[i] > 0) allzero = false;
+            for (int i = word_idx - 1; allzero && i >= 0; --i) {
+                if (acc.acc[i] > 0) {
+                    allzero = false;
+                }
+            }
         }
         if (!allzero) {
             components.mantissa++; // case 2, need to check for overflow
@@ -320,11 +373,19 @@ void LongAccumulator::round(const LongAccumulator& acc, float_components& compon
             components.mantissa++; // case 3b, need to check for overflow
         }
     } else if (rounding_mode == FE_UPWARD && !components.negative ||
-                rounding_mode == FE_DOWNWARD && components.negative) {
+               rounding_mode == FE_DOWNWARD && components.negative) {
         bool allzero = true;
-        for (int i = bit_idx; allzero && i >= 0; --i) if (bits.test(i)) allzero = false;
+        for (int i = bit_idx; allzero && i >= 0; --i) {
+            if (bits.test(i)) {
+                allzero = false;
+            }
+        }
         if (allzero) {
-            for (int i = word_idx - 1; allzero && i >= 0; --i) if (acc.acc[i] > 0) allzero = false;
+            for (int i = word_idx - 1; allzero && i >= 0; --i) {
+                if (acc.acc[i] > 0) {
+                    allzero = false;
+                }
+            }
         }
         if (!allzero) {
             components.mantissa++; // case 1, need to check for overflow
