@@ -13,3 +13,4 @@ $(TARGET): $(SRC) Makefile
 
 clean:
 	rm -f $(TARGET)
+	rm -f output_*.log

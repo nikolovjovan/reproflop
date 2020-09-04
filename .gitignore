@@ -54,7 +54,14 @@ dkms.conf
 # Visual Studio Code Settings
 .vscode
 
+# Log files
+*.log
+
 # RNGExample executable files
 src/RNGExample/Base/RNGExample
 src/RNGExample/WeakReproducibility/RNGExample
 src/RNGExample/StrongReproducibility/RNGExample
+
+# mri-gridding executable files
+src/mri-gridding\ (Parboil)/Base_WeakReproducibility/mri-gridding
+src/mri-gridding\ (Parboil)/StrongReproducibility/mri-gridding

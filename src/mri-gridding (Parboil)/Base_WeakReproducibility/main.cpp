@@ -7,6 +7,7 @@
  ***************************************************************************/
 
 #include <math.h>
+#include <omp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,10 +16,15 @@
 
 #define PI 3.14159265
 
-extern void calculateLUT(float beta, float width, float **LUT, unsigned int *sizeLUT);
+extern void calculate_LUT_seq(float beta, float width, float **LUT, unsigned int *sizeLUT);
 
-extern int gridding_Gold(unsigned int n, parameters params, ReconstructionSample *sample, float *LUT,
-                         unsigned int sizeLUT, cmplx *gridData, float *sampleDensity);
+extern void calculate_LUT_omp(float beta, float width, float **LUT, unsigned int *sizeLUT);
+
+extern int gridding_seq(unsigned int n, parameters params, ReconstructionSample *sample, float *LUT,
+                        unsigned int sizeLUT, cmplx *gridData, float *sampleDensity, double *time);
+
+extern int gridding_omp(unsigned int n, parameters params, ReconstructionSample *sample, float *LUT,
+                        unsigned int sizeLUT, cmplx *gridData, float *sampleDensity, double *time);
 
 /************************************************************
  * This function reads the parameters from the file provided
@@ -98,6 +104,58 @@ unsigned int readSampleData(parameters params, FILE *uksdata_f, ReconstructionSa
     return i;
 }
 
+const float ACCURACY = 0.1;
+
+/**
+ * "Nastelovana" funkcija za poredjenje float vrednosti.
+ * Naime, posto u racunanju vrednosti jednog elementa nizova gridData i sampleDensity postoji nekoliko hiljada operacija, preciznost operacija drasticno opada.
+ * Za jednu operaciju sabiranja float garantuje preciznost od 6-7 znacajnih cifara. Kada se to ponovi nekoliko hiljada puta koliko je ovde i slucaj
+ * (vidi se u nizu sampleDensity), preciznost pada na 1-2 znacajne cifre.
+ * Ovaj test brojeve deli sa 10 dok ne postanu manji od 10 pa proverava da li je razlika manja od 0.1 sto efektivno znaci da proverava na 2 znacajne cifre.
+ * Kada se proba sa 3 znacajne cifre ne prolazi iako brojevi "lice". Upravo to je rezultat inherentne greske kod floating point operacija.
+ */
+int compare(float a, float b) {
+    while (fabs(a) > 10.f && fabs(b) > 10.f) {
+        a /= 10;
+        b /= 10;
+    }
+    if (a - b > ACCURACY) return 1;
+    if (a - b < -ACCURACY) return -1;
+    return 0;
+}
+
+int diff(int sizeLUT, float *LUT, int sizeLUT_omp, float *LUT_omp, int gridNumElems, cmplx *gridData, float *sampleDensity, cmplx *gridData_omp, float *sampleDensity_omp)
+{
+    int i;
+
+    // Compare LUT
+    if (sizeLUT != sizeLUT_omp) {
+        printf("LUT sizes mismatch!\n");
+        return 1;
+    }
+    for (i = 0; i < sizeLUT; ++i) {
+        if (fabs(LUT[i] - LUT_omp[i]) > ACCURACY) {
+            printf("LUT[%d] mismatch: %f <-> %f\n", i, LUT[i], LUT_omp[i]);
+            return 2;
+        }
+    }
+
+    // Compare gridData and sampleDensity
+    for (i = 0; i < gridNumElems; ++i) {
+        if (compare(gridData[i].real, gridData_omp[i].real) || compare(gridData[i].imag, gridData_omp[i].imag)) {
+            printf("gridData[%d] mismatch: %f, %f <-> %f, %f\n", i, gridData[i].real, gridData[i].imag, gridData_omp[i].real, gridData_omp[i].imag);
+            return 3;
+        }
+        if (fabs(sampleDensity[i] - sampleDensity_omp[i]) > ACCURACY) {
+            printf("sampleDensity[%d] mismatch: %f <-> %f\n", i, sampleDensity[i], sampleDensity_omp[i]);
+            return 4;
+        }
+    }
+
+    // Results same
+    return 0;
+}
+
 int main(int argc, char *argv[])
 {
     char uksfile[256];
@@ -107,8 +165,9 @@ int main(int argc, char *argv[])
     FILE *uksfile_f = NULL;
     FILE *uksdata_f = NULL;
 
-    if (argc != 3)
+    if (argc != 3) {
         return -1;
+    }
 
     strcpy(uksfile, argv[1]);
     strcpy(uksdata, argv[1]);
@@ -120,7 +179,7 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
-    printf("\nReading parameters\n");
+    printf("Reading parameters\n");
 
     if (argc >= 2) {
         params.binsize = atoi(argv[2]);
@@ -132,20 +191,23 @@ int main(int argc, char *argv[])
 
     ReconstructionSample *samples =
         (ReconstructionSample *) malloc(params.numSamples * sizeof(ReconstructionSample)); // Input Data
-    float *LUT;           // use look-up table for faster execution on CPU (intermediate data)
-    unsigned int sizeLUT; // set in the function calculateLUT (intermediate data)
+    float *LUT_seq, *LUT_omp;              // use look-up table for faster execution on CPU (intermediate data)
+    unsigned int sizeLUT_seq, sizeLUT_omp; // set in the function calculateLUT (intermediate data)
 
     int gridNumElems = params.gridSize[0] * params.gridSize[1] * params.gridSize[2];
 
-    cmplx *gridData = (cmplx *) calloc(gridNumElems, sizeof(cmplx));      // Output Data
-    float *sampleDensity = (float *) calloc(gridNumElems, sizeof(float)); // Output Data
+    // Output Data
+    cmplx *gridData_seq = (cmplx *) calloc(gridNumElems, sizeof(cmplx));
+    cmplx *gridData_omp = (cmplx *) calloc(gridNumElems, sizeof(cmplx));
+    float *sampleDensity_seq = (float *) calloc(gridNumElems, sizeof(float));
+    float *sampleDensity_omp = (float *) calloc(gridNumElems, sizeof(float));
 
     if (samples == NULL) {
         printf("ERROR: Unable to allocate memory for input data\n");
         exit(1);
     }
 
-    if (sampleDensity == NULL || gridData == NULL) {
+    if (gridData_seq == NULL || gridData_omp == NULL || sampleDensity_seq == NULL || sampleDensity_omp == NULL) {
         printf("ERROR: Unable to allocate memory for output data\n");
         exit(1);
     }
@@ -162,22 +224,52 @@ int main(int argc, char *argv[])
     unsigned int n = readSampleData(params, uksdata_f, samples);
     fclose(uksdata_f);
 
+    double tstart, time_seq = 0, time_omp = 0, time_loop_seq, time_loop_omp;
+
     if (params.useLUT) {
         printf("Generating Look-Up Table\n");
-        float beta = PI * sqrt(4 * params.kernelWidth * params.kernelWidth / (params.oversample * params.oversample) *
-                                   (params.oversample - .5) * (params.oversample - .5) -
-                               .8);
-        calculateLUT(beta, params.kernelWidth, &LUT, &sizeLUT);
+        float beta = PI * sqrt(4 * params.kernelWidth * params.kernelWidth / (params.oversample * params.oversample) * (params.oversample - .5) * (params.oversample - .5) - .8);
+
+        tstart = omp_get_wtime();
+        calculate_LUT_seq(beta, params.kernelWidth, &LUT_seq, &sizeLUT_seq);
+        time_seq += omp_get_wtime() - tstart;
+
+        tstart = omp_get_wtime();
+        calculate_LUT_omp(beta, params.kernelWidth, &LUT_omp, &sizeLUT_omp);
+        time_omp += omp_get_wtime() - tstart;
     }
 
-    gridding_Gold(n, params, samples, LUT, sizeLUT, gridData, sampleDensity);
+    printf("Sequential implementation LUT generation execution time: %.3f\n", time_seq);
+    printf("Parallel implementation LUT generation execution time: %.3f\n", time_omp);
+    printf("LUT generation speedup: %.3f\n", time_seq / time_omp);
+
+    tstart = omp_get_wtime();
+    gridding_seq(n, params, samples, LUT_seq, sizeLUT_seq, gridData_seq, sampleDensity_seq, &time_loop_seq);
+    time_seq += omp_get_wtime() - tstart;
+
+    tstart = omp_get_wtime();
+    gridding_omp(n, params, samples, LUT_omp, sizeLUT_omp, gridData_omp, sampleDensity_omp, &time_loop_omp);
+    time_omp += omp_get_wtime() - tstart;
+
+    printf("\nSequential implementation loop execution time: %.3f\n", time_loop_seq);
+    printf("Parallel implementation loop execution time: %.3f\n", time_loop_omp);
+    printf("Loop speedup: %.3f\n", time_loop_seq / time_loop_omp);
+
+    printf("\nSequential implementation execution time: %.3f\n", time_seq);
+    printf("Parallel implementation execution time: %.3f\n", time_omp);
+    printf("Speedup: %.3f\n", time_seq / time_omp);
+
+    printf("Test %s\n", diff(sizeLUT_seq, LUT_seq, sizeLUT_omp, LUT_omp, gridNumElems, gridData_seq, sampleDensity_seq, gridData_omp, sampleDensity_omp) == 0 ? "PASSED" : "FAILED");
 
     if (params.useLUT) {
-        free(LUT);
+        free(LUT_seq);
+        free(LUT_omp);
     }
     free(samples);
-    free(gridData);
-    free(sampleDensity);
+    free(gridData_seq);
+    free(gridData_omp);
+    free(sampleDensity_seq);
+    free(sampleDensity_omp);
 
     return 0;
 }
