@@ -12,7 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+#include <sys/sysinfo.h>
 
 #include "UDTypes.h"
 #include "LongAccumulator.h"
@@ -584,8 +584,10 @@ void gridding_omp_locks(unsigned int n, parameters params, ReconstructionSample 
     float tempGridDataReal;
     float tempGridDataImag;
 
-    int gridNumElems = size_x * size_y * size_z;
-    int lockNum = MAX_LOCK_COUNT > gridNumElems ? gridNumElems : MAX_LOCK_COUNT;
+    LongAccumulator *gridDataRealAcc, *gridDataImagAcc;
+
+    uint32_t gridNumElems = size_x * size_y * size_z;
+    uint32_t lockNum = MAX_LOCK_COUNT > gridNumElems ? gridNumElems : MAX_LOCK_COUNT;
 
     omp_lock_t *locks = (omp_lock_t *) calloc(lockNum, sizeof(omp_lock_t));
     if (locks == NULL) {
@@ -597,11 +599,17 @@ void gridding_omp_locks(unsigned int n, parameters params, ReconstructionSample 
         omp_init_lock(&locks[i]);
     }
 
+    if (reproducible) {
+        /* initialize output buffers */
+        gridDataRealAcc = new LongAccumulator[gridNumElems]();
+        gridDataImagAcc = new LongAccumulator[gridNumElems]();
+    }
+
     double tstart = omp_get_wtime();
 
 #pragma omp parallel for default(none) \
             private(i, pt, NxL, NxH, NyL, NyH, NzL, NzH, nx, ny, nz, w, tempGridDataReal, tempGridDataImag, idx, idx0, idxZ, idxY, Dx2, Dy2, Dz2, dx2, dy2, dz2, dy2dz2, v) \
-            shared(n, params, sample, LUT, sizeLUT, gridData, sampleDensity, size_x, size_y, size_z, cutoff, cutoff2, _1overCutoff2, beta, lockNum, locks)
+            shared(n, params, sample, LUT, sizeLUT, gridData, sampleDensity, size_x, size_y, size_z, cutoff, cutoff2, _1overCutoff2, beta, lockNum, locks, reproducible, gridDataRealAcc, gridDataImagAcc)
     for (i = 0; i < n; i++) {
         pt = sample[i];
 
@@ -669,8 +677,13 @@ void gridding_omp_locks(unsigned int n, parameters params, ReconstructionSample 
                                     omp_set_lock(&locks[idx % lockNum]);
 
                                     /* grid data */
-                                    gridData[idx].real += tempGridDataReal;
-                                    gridData[idx].imag += tempGridDataImag;
+                                    if (reproducible) {
+                                        gridDataRealAcc[idx] += tempGridDataReal;
+                                        gridDataImagAcc[idx] += tempGridDataImag;
+                                    } else {
+                                        gridData[idx].real += tempGridDataReal;
+                                        gridData[idx].imag += tempGridDataImag;
+                                    }
 
                                     /* estimate sample density */
                                     sampleDensity[idx] += 1.0;
@@ -688,6 +701,18 @@ void gridding_omp_locks(unsigned int n, parameters params, ReconstructionSample 
 
     *time = omp_get_wtime() - tstart;
 
+    if (reproducible) {
+        /* convert temp data to output data */
+        for (i = 0; i < gridNumElems; ++i) {
+            gridData[i].real = gridDataRealAcc[i]();
+            gridData[i].imag = gridDataImagAcc[i]();
+        }
+
+        /* free allocated memory */
+        delete[] gridDataRealAcc;
+        delete[] gridDataImagAcc;
+    }
+
     /* free allocated memory */
     for (i = 0; i < lockNum; ++i) {
         omp_destroy_lock(&locks[i]);
@@ -703,8 +728,17 @@ void gridding_omp(unsigned int n, parameters params, ReconstructionSample *sampl
     uint64_t gridNumElems = params.gridSize[0] * params.gridSize[1] * params.gridSize[2];
     uint64_t numThreads = omp_get_max_threads();
 
-    uint64_t requiredMemSize = numThreads * gridNumElems * (sizeof(cmplx) + sizeof(float));
-    uint64_t totalMemSize = sysconf(_SC_PHYS_PAGES) * syscall(_SC_PAGE_SIZE);
+    struct sysinfo memInfo;
+    sysinfo(&memInfo);
+    uint64_t totalMemSize = memInfo.totalram;
+    uint64_t requiredMemSize;
+    if (reproducible) {
+        requiredMemSize = numThreads * gridNumElems * sizeof(LongAccumulator) * 2 + gridNumElems * (sizeof(cmplx) + sizeof(float));
+    } else {
+        requiredMemSize = numThreads * gridNumElems * (sizeof(cmplx) + sizeof(float));
+    }
+
+    printf("Available memory: %llu; Required memory: %llu\n", totalMemSize, requiredMemSize);
 
     /* depending on required memory, use locks or thread-local memory implementation */
     if (requiredMemSize > totalMemSize * MAX_MEM_USAGE_PERCENT) {
