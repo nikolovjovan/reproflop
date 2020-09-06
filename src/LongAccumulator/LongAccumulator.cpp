@@ -399,7 +399,7 @@ void LongAccumulator::round(const LongAccumulator &acc, float_components &compon
         return;
     }
     // Check if rounding caused overflow...
-    if (components.mantissa > 0x7FFFFF) {
+    if (components.mantissa > 0xFFFFFF) {
         components.mantissa >>= 1;
         components.exponent++;
         if (components.exponent > 0xFE) {

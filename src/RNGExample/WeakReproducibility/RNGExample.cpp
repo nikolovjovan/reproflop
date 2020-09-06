@@ -239,7 +239,7 @@ void run_sequential()
             time_sequential = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
             cout << "Sequential sum: " << fixed << setprecision(10) << sum_sequential << " (" << scientific
                  << setprecision(10) << sum_sequential << ')' << endl;
-        } else if (sum == sum_sequential) {
+        } else if (sum != sum_sequential) {
             cout << "Sequential sum not reproducible after " << run_idx << " runs!" << endl;
             break;
         }
@@ -301,7 +301,7 @@ void *kernel_sum(void *data)
                 result_valid = true;
                 cout << "Parallel sum: " << fixed << setprecision(10) << sum_parallel << " (" << scientific
                      << setprecision(10) << sum_parallel << ')' << endl;
-            } else if (partial_sums[id] == sum_parallel) {
+            } else if (partial_sums[id] != sum_parallel) {
                 cout << "Parallel sum not reproducible after " << repeat_counter << " runs!" << endl;
                 result_valid = false;
             }
