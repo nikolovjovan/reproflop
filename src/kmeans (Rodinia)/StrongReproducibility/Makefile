@@ -1,7 +1,8 @@
 # C++ compiler
+LACCDIR		= ../../LongAccumulator
 CC			= g++
-CC_FLAGS	= -std=c++14 -fopenmp -lm -O2
-SRC			= cluster.cpp kmeans.cpp kmeans_clustering.cpp
+CC_FLAGS	= -std=c++14 -fopenmp -lm -O2 -I$(LACCDIR)
+SRC			= cluster.cpp kmeans.cpp kmeans_clustering.cpp $(LACCDIR)/LongAccumulator.cpp
 TARGET		= kmeans
 
 .PHONY: all clean

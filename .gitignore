@@ -57,6 +57,10 @@ dkms.conf
 # Log files
 *.log
 
+# kmeans executable files
+src/kmeans\ (Rodinia)/Base_WeakReproducibility/kmeans
+src/kmeans\ (Rodinia)/StrongReproducibility/kmeans
+
 # LongAccumulator executable files
 src/LongAccumulator/test
 
