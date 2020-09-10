@@ -20,10 +20,6 @@ float_components extractComponents(float f)
     if (components.exponent != 0x00 && components.exponent != 0xFF) {
         components.mantissa |= 0x800000; // hidden bit is equal to 1
     }
-    // cout << "Float: " << fixed << setprecision(10) << f << " (" << bitset<32>(tmp)
-    //     << ") Sign: " << components.negative
-    //     << " Exponent: " << components.exponent << " (" << bitset<8>(components.exponent)
-    //     << ") Mantissa: " << components.mantissa << " (" << bitset<24>(components.mantissa) << ')' << endl;
     return components;
 }
 
@@ -67,7 +63,7 @@ LongAccumulator &LongAccumulator::operator+=(float f)
     // Check if more than one word is affected (split mantissa)
     bool split = ((components.exponent - 1) >> 5) < k;
     // Calculate number of bits in the higher part of the mantissa
-    uint32_t hi_width = (components.exponent - 9) % 32;
+    uint32_t hi_width = (components.exponent - 9) & 0x1F;
     if (!split) {
         add(k, components.mantissa << (hi_width - 24), components.negative);
     } else {
@@ -323,19 +319,20 @@ float LongAccumulator::operator()()
 
 void LongAccumulator::add(uint32_t idx, uint32_t val, bool negative)
 {
-    if (idx < 0 || idx >= ACC_SIZE) {
-        return;
-    }
-    uint32_t old = acc[idx];
-    if (!negative) {
-        acc[idx] += val;
-        if (acc[idx] < old) { // overflow
-            add(idx + 1, 1, false);
-        }
-    } else {
-        acc[idx] -= val;
-        if (acc[idx] > old) { // underflow
-            add(idx + 1, 1, true);
+    while (idx < ACC_SIZE) {
+        uint32_t old = acc[idx];
+        if (!negative) {
+            acc[idx] += val;
+            if (acc[idx] < old) { // overflow
+                ++idx;
+                val = 1;
+            } else break;
+        } else {
+            acc[idx] -= val;
+            if (acc[idx] > old) { // underflow
+                ++idx;
+                val = 1;
+            } else break;
         }
     }
 }
