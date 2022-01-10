@@ -28,18 +28,27 @@ enable_testing ()
 option (REPROFLOP_CPU "Create a CPU specific library" OFF)
 option (REPROFLOP_GPU "Create a GPU specific library" OFF)
 
+# GPU Architecture specific flags.
+#
+option (REPROFLOP_GPU_AMD "By setting this option we enable compilation for AMD GPUs" OFF)
+option (REPROFLOP_GPU_NVIDIA "By setting this option we enable compilation for NVIDIA GPUs" OFF)
+
+# If any GPU Architecture flag is set, ensure GPU flag is set.
+#
+if (NOT REPROFLOP_GPU AND (REPROFLOP_GPU_AMD OR REPROFLOP_GPU_NVIDIA))
+    set (REPROFLOP_GPU ON)
+endif ()
+
 # If specified, enable timing code (slows down execution).
 #
 option (REPROFLOP_TIMING "Enable/disable timing of library routines (uses cpu cycles)" OFF)
 if (REPROFLOP_TIMING)
     set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DREPROFLOP_TIMING")
-endif (REPROFLOP_TIMING)
+endif ()
 
-# TODO: Change default value to OFF...
-#
 # Add CMake option to enable default execution of examples with CTest.
 #
-option (REPROFLOP_TEST_EXAMPLES "Execute examples with default parameters during CTest" ON)
+option (REPROFLOP_TEST_EXAMPLES "Execute examples with default parameters during CTest" OFF)
 
 # Recurse into the "src" and "test" subdirectories to build library, examples and tests.
 #

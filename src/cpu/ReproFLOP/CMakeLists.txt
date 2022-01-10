@@ -6,11 +6,11 @@ file (GLOB_RECURSE REPROFLOP_C_CPP_SOURCE "*.c" "*.cpp")
 #
 file (GLOB_RECURSE REPROFLOP_C_CPP_HEADERS "*.h")
 
-set (REPROFLOP_C_CPP_FILES "${REPROFLOP_C_CPP_SOURCE};${REPROFLOP_C_CPP_HEADERS}")
+set (REPROFLOP_FILES "${REPROFLOP_C_CPP_SOURCE};${REPROFLOP_C_CPP_HEADERS}")
 
 # Add the main library.
 #
-add_library (reproflop_cpu ${REPROFLOP_C_CPP_FILES})
+add_library (reproflop_cpu ${REPROFLOP_FILES})
 
 # Add library install target.
 #

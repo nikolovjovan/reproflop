@@ -1,6 +1,10 @@
 # Update compiler flags.
 #
-set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fopenmp -lm")
+set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fopenmp")
+
+# Link math library.
+#
+set (EXTRA_LIBS ${EXTRA_LIBS} m)
 
 # Set install target directory.
 #
