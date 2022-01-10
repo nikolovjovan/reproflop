@@ -27,5 +27,5 @@ install (TARGETS ${EXAMPLE_TARGET_NAME} DESTINATION ${EXAMPLE_TARGET_DIR})
 # Add CMake tests to execute examples to verify default execution does not crash if option is specified.
 #
 if (REPROFLOP_TEST_EXAMPLES)
-    add_test (${EXAMPLE_TARGET_NAME} ${EXAMPLE_TARGET_DIR}/${EXAMPLE_TARGET_NAME} "-i ${EXAMPLE_TARGET_DIR}/data/kdd_cup")
+    add_test (${EXAMPLE_TARGET_NAME} ${EXAMPLE_TARGET_DIR}/${EXAMPLE_TARGET_NAME} -i ${EXAMPLE_TARGET_DIR}/data/kdd_cup)
 endif (REPROFLOP_TEST_EXAMPLES)

@@ -4,7 +4,7 @@ set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fopenmp -lm")
 
 # Set install target directory.
 #
-set (EXAMPLE_TARGET_DIR ${PROJECT_BINARY_DIR}/examples/cpu/kmeans)
+set (EXAMPLE_TARGET_DIR ${PROJECT_BINARY_DIR}/examples/cpu/mri-gridding)
 
 # Traverse example versions.
 #
