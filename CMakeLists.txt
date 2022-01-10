@@ -1,4 +1,5 @@
 cmake_minimum_required (VERSION 3.18.4)
+
 include(CheckCSourceCompiles)
 include(CheckCXXSourceCompiles)
 include(CheckFunctionExists)
@@ -7,36 +8,40 @@ project (REPROFLOP)
 enable_language (CXX)
 
 # The version number.
+#
 set (REPROFLOP_VERSION_MAJOR 1)
 set (REPROFLOP_VERSION_MINOR 0)
-set (REPROFLOP_SOURCE_DIR ${PROJECT_SOURCE_DIR})
-set (REPROFLOP_BINARY_DIR ${PROJECT_BINARY_DIR})
 
-# Configure a header file to pass some of the CMake settings to the source code
+# TODO: Remove if not needed for finding OpenCL kernel files...
 #
-configure_file (
-  "${PROJECT_SOURCE_DIR}/cmake/config.h.in"
-  "${PROJECT_BINARY_DIR}/include/config.h"
-)
-
-# Include dir with config.h.in
+# Source and binary directories.
 #
-list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake/")
+# set (REPROFLOP_SOURCE_DIR ${PROJECT_SOURCE_DIR})
+# set (REPROFLOP_BINARY_DIR ${PROJECT_BINARY_DIR})
 
-# Enable testing
+# Enable testing.
 #
 enable_testing ()
 
-# Recurse into the "src" subdirectory. This does not actually
-# cause another cmake executable to run. The same process will walk through
-# the project's entire directory structure.
+# Add CMake options for target architecture.
+#
+option (REPROFLOP_CPU "Create a CPU specific library" OFF)
+option (REPROFLOP_GPU "Create a GPU specific library" OFF)
+
+# If specified, enable timing code (slows down execution).
+#
+option (REPROFLOP_TIMING "Enable/disable timing of library routines (uses cpu cycles)" OFF)
+if (REPROFLOP_TIMING)
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DREPROFLOP_TIMING")
+endif (REPROFLOP_TIMING)
+
+# TODO: Change default value to OFF...
+#
+# Add CMake option to enable default execution of examples with CTest.
+#
+option (REPROFLOP_TEST_EXAMPLES "Execute examples with default parameters during CTest" ON)
+
+# Recurse into the "src" and "test" subdirectories to build library, examples and tests.
 #
 add_subdirectory (src)
-
-# Build a CPack driven installer package
-#
-include (InstallRequiredSystemLibraries)
-set (CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
-set (CPACK_PACKAGE_VERSION_MAJOR "${REPROFLOP_VERSION_MAJOR}")
-set (CPACK_PACKAGE_VERSION_MINOR "${REPROFLOP_VERSION_MINOR}")
-include (CPack)
+add_subdirectory (test)

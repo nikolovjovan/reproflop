@@ -18,7 +18,7 @@ float packToFloat(float_components components);
 
 class LongAccumulator
 {
-  public:
+public:
     LongAccumulator() {}
     LongAccumulator(float f);
 
@@ -58,7 +58,8 @@ class LongAccumulator
     friend std::ostream &operator<<(std::ostream &out, const LongAccumulator &acc);
 
     float operator()(); // returns float value of this accumulator
-  private:
+
+private:
     std::array<uint32_t, ACC_SIZE> acc {};
 
     // Adds the value to the word at index idx with carry/borrow
@@ -68,4 +69,4 @@ class LongAccumulator
     void round(const LongAccumulator &acc, float_components &components, int word_idx, int bit_idx);
 };
 
-#endif
+#endif  // LONGACCUMULATOR_H
