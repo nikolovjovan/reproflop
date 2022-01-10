@@ -1,11 +1,12 @@
 #ifndef COMMON_H
 #define COMMON_H
 
+#include "config.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <cassert>
 #include <cstring>
-
 #include <iostream>
 
 #include <CL/opencl.h>

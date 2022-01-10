@@ -1,7 +1,5 @@
 #include "LongAccumulator.h"
 
-#include "common.h"
-
 #define LNGACC_KERNEL_FILENAME  "LongAccumulator.cl"
 
 #define LNGACC_KERNEL           "LongAccumulator"
@@ -161,22 +159,27 @@ cl_int LongAccumulator::InitializeAcc(
 {
     cl_int ciErrNum;
 
-    size_t sourceCodeLenth = 0;
+    size_t sourceCodeLength = 0;
     char* sourceCode = nullptr;
+
+    char path[256];
+    strcpy(path, REPROFLOP_BINARY_DIR);
+    strcat(path, "/include/cl/");
+    strcat(path, LNGACC_KERNEL_FILENAME);
 
     // Read the OpenCL kernel in from source file
     //
-    FILE *pProgramHandle = fopen(LNGACC_KERNEL_FILENAME, "r");
+    FILE *pProgramHandle = fopen(path, "r");
     if (!pProgramHandle) {
         cerr << "Failed to load kernel.\n";
         return -1;
     }
     fseek(pProgramHandle, 0, SEEK_END);
-    sourceCodeLenth = ftell(pProgramHandle);
+    sourceCodeLength = ftell(pProgramHandle);
     rewind(pProgramHandle);
-    sourceCode = (char *) malloc(sourceCodeLenth + 1);
-    sourceCode[sourceCodeLenth] = '\0';
-    if (fread(sourceCode, sizeof(char), sourceCodeLenth, pProgramHandle) != sourceCodeLenth)
+    sourceCode = (char *) malloc(sourceCodeLength + 1);
+    sourceCode[sourceCodeLength] = '\0';
+    if (fread(sourceCode, sizeof(char), sourceCodeLength, pProgramHandle) != sourceCodeLength)
     {
         cerr << "Failed to read source code.\n";
         return -2;
@@ -187,7 +190,7 @@ cl_int LongAccumulator::InitializeAcc(
 
     // Create OpenCL program from source
     //
-    s_program = clCreateProgramWithSource(context, 1, (const char **)&sourceCode, &sourceCodeLenth, &ciErrNum);
+    s_program = clCreateProgramWithSource(context, 1, (const char **)&sourceCode, &sourceCodeLength, &ciErrNum);
     if (ciErrNum != CL_SUCCESS) {
         cerr << "Error = " << ciErrNum << "\n";
         cerr << "Error in clCreateProgramWithSource, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";

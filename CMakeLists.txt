@@ -1,8 +1,8 @@
 cmake_minimum_required (VERSION 3.18.4)
 
-include(CheckCSourceCompiles)
-include(CheckCXXSourceCompiles)
-include(CheckFunctionExists)
+include (CheckCSourceCompiles)
+include (CheckCXXSourceCompiles)
+include (CheckFunctionExists)
 
 project (REPROFLOP)
 enable_language (CXX)
@@ -12,12 +12,21 @@ enable_language (CXX)
 set (REPROFLOP_VERSION_MAJOR 1)
 set (REPROFLOP_VERSION_MINOR 0)
 
-# TODO: Remove if not needed for finding OpenCL kernel files...
-#
 # Source and binary directories.
 #
-# set (REPROFLOP_SOURCE_DIR ${PROJECT_SOURCE_DIR})
-# set (REPROFLOP_BINARY_DIR ${PROJECT_BINARY_DIR})
+set (REPROFLOP_SOURCE_DIR ${PROJECT_SOURCE_DIR})
+set (REPROFLOP_BINARY_DIR ${PROJECT_BINARY_DIR})
+
+# Configure a header file to make some of CMake settings available in source code.
+#
+configure_file (
+  "${PROJECT_SOURCE_DIR}/cmake/config.h.in"
+  "${PROJECT_BINARY_DIR}/include/config.h"
+)
+
+# Include directory with config.h.in.
+#
+list (APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake/")
 
 # Enable testing.
 #
