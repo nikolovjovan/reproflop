@@ -213,6 +213,8 @@ cl_int LongAccumulator::InitializeAcc(
         return -4;
     }
 
+    // Create kernels
+    //
     s_kernel = clCreateKernel(s_program, LNGACC_KERNEL, &ciErrNum);
     if (ciErrNum != CL_SUCCESS) {
         cerr << "Error = " << ciErrNum << "\n";

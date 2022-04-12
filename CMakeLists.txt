@@ -1,11 +1,11 @@
 cmake_minimum_required (VERSION 3.18.4)
 
+project (REPROFLOP)
+enable_language (CXX)
+
 include (CheckCSourceCompiles)
 include (CheckCXXSourceCompiles)
 include (CheckFunctionExists)
-
-project (REPROFLOP)
-enable_language (CXX)
 
 # The version number.
 #
