@@ -26,6 +26,6 @@ install (TARGETS ${EXAMPLE_TARGET_NAME} DESTINATION ${EXAMPLE_TARGET_DIR})
 
 # Add CMake tests to execute examples to verify default execution does not crash if option is specified.
 #
-if (REPROFLOP_TEST_EXAMPLES)
+if (TEST_EXAMPLES)
     add_test (${EXAMPLE_TARGET_NAME} ${EXAMPLE_TARGET_DIR}/${EXAMPLE_TARGET_NAME} ${EXAMPLE_TARGET_DIR}/data/small/small.uks 32)
 endif ()

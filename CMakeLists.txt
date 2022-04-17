@@ -57,7 +57,7 @@ endif ()
 
 # Add CMake option to enable default execution of examples with CTest.
 #
-option (REPROFLOP_TEST_EXAMPLES "Execute examples with default parameters during CTest" OFF)
+option (TEST_EXAMPLES "Execute examples with default parameters during CTest" OFF)
 
 # Recurse into the "src" and "test" subdirectories to build library, examples and tests.
 #
