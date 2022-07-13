@@ -54,24 +54,12 @@ dkms.conf
 # Visual Studio Code Settings
 .vscode
 
+# JetBrains CLion Settings
+.idea
+
 # Log files
 *.log
 
-# kmeans executable files (deprecated - REMOVE)
-src/kmeans\ (Rodinia)/Base_WeakReproducibility/kmeans
-src/kmeans\ (Rodinia)/StrongReproducibility/kmeans
-
-# LongAccumulator executable files (deprecated - REMOVE)
-src/LongAccumulator/test
-
-# mri-gridding executable files (deprecated - REMOVE)
-src/mri-gridding\ (Parboil)/Base_WeakReproducibility/mri-gridding
-src/mri-gridding\ (Parboil)/StrongReproducibility/mri-gridding
-
-# RNGExample executable files (deprecated - REMOVE)
-src/RNGExample/Base/RNGExample
-src/RNGExample/WeakReproducibility/RNGExample
-src/RNGExample/StrongReproducibility/RNGExample
-
 # Build directory
 build
+cmake-build-debug
