@@ -1,3 +1,7 @@
+# Disable optimizations as it causes stack smashing...
+#
+set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0")
+
 # Link math and OpenCL library.
 #
 set (EXTRA_LIBS ${EXTRA_LIBS} m OpenCL)
