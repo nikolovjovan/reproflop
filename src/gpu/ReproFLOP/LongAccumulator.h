@@ -3,12 +3,64 @@
 
 #include "common.h"
 
+// binary32 (float) component widths
+//
+constexpr uint32_t EXPONENT_WIDTH = 8;
+constexpr uint32_t MANTISSA_WIDTH = 23;
+
+// Total width of the long accumulator required to store a binary32 number.
+//
+constexpr uint32_t TOTAL_WIDTH = (1 << EXPONENT_WIDTH) + MANTISSA_WIDTH;
+
+// Size of one long accumulator (number of words) and total number of long accumulators.
+//
+constexpr uint32_t ACCUMULATOR_SIZE = (TOTAL_WIDTH + 8 * sizeof(uint32_t) - 1) / (8 * sizeof(uint32_t));
+constexpr uint32_t ACCUMULATOR_COUNT = 512;
+
+// Size of a single work unit (warp).
+//
+constexpr uint32_t WARP_SIZE = 16;
+
+// For the first step (accumulation) we use 16 warps of 16 threads for a total of 256 threads in a workgroup.
+//
+constexpr uint32_t ACCUMULATE_WARP_COUNT = 16;
+constexpr uint32_t ACCUMULATE_WORKGROUP_SIZE = WARP_SIZE * ACCUMULATE_WARP_COUNT;
+
+constexpr uint32_t nextPow2(uint32_t v)
+{
+    if (v == 0)
+        return 1;
+
+    v--;
+    v |= v >> 1;
+    v |= v >> 2;
+    v |= v >> 4;
+    v |= v >> 8;
+    v |= v >> 16;
+    v++;
+
+    return v;
+}
+
+// For the second step (merging and rounding) we use 1 warp of 16 threads for a total of 16 threads in a workgroup.
+// This is because ACCUMULATOR_SIZE is 9 and we only need 9 threads 
+//
+constexpr uint32_t MERGE_WARP_COUNT = nextPow2(ACCUMULATOR_SIZE) / WARP_SIZE;
+constexpr uint32_t MERGE_WORKGROUP_SIZE = WARP_SIZE * MERGE_WARP_COUNT;
+
+// Number of accumulators that will get merged in the first step.
+//
+constexpr uint32_t MERGE_ACCUMULATOR_COUNT = 64;
+
 class LongAccumulator
 {
 public:
     static int InitializeOpenCL();
     static int CleanupOpenCL();
 
+    static float Sum(const int N, float *arr, int *err = nullptr);
+
+private:
     static cl_int InitializeAcc(
         cl_context context,
         cl_command_queue commandQueue,
@@ -24,80 +76,13 @@ private:
     static cl_command_queue s_commandQueue;
 
     static cl_program s_program;
-    static cl_kernel s_kernel;
-    static cl_kernel s_complete;
-    static cl_kernel s_round;
+    static cl_kernel s_clkAccumulate;
+    static cl_kernel s_clkMerge;
 
-    static cl_mem s_data_acc;
-
+    static cl_mem s_data_arr;
     static cl_mem s_data_res;
+
+    static cl_mem s_accumulators;
 };
-
-// #include <array>
-// #include <cstdint>
-// #include <iostream>
-
-// constexpr uint32_t ACC_SIZE = 9;
-
-// typedef struct {
-//     bool negative;
-//     uint32_t exponent;
-//     uint32_t mantissa;
-// } float_components;
-
-// float_components extractComponents(float f);
-// float packToFloat(float_components components);
-
-// class LongAccumulator
-// {
-//   public:
-//     LongAccumulator() {}
-//     LongAccumulator(float f);
-
-//     LongAccumulator &operator+=(const LongAccumulator &other);
-//     LongAccumulator &operator-=(const LongAccumulator &other);
-
-//     LongAccumulator &operator+=(float f);
-//     LongAccumulator &operator-=(float f);
-
-//     LongAccumulator &operator=(float f);
-
-//     LongAccumulator operator+() const;
-//     LongAccumulator operator-() const;
-
-//     friend LongAccumulator operator+(LongAccumulator acc, const LongAccumulator &other);
-//     friend LongAccumulator operator-(LongAccumulator acc, const LongAccumulator &other);
-
-//     friend LongAccumulator operator+(LongAccumulator acc, float f);
-//     friend LongAccumulator operator-(LongAccumulator acc, float f);
-
-//     friend bool operator==(const LongAccumulator &l, const LongAccumulator &r);
-//     friend bool operator!=(const LongAccumulator &l, const LongAccumulator &r);
-
-//     friend bool operator< (const LongAccumulator &l, const LongAccumulator &r);
-//     friend bool operator> (const LongAccumulator &l, const LongAccumulator &r);
-//     friend bool operator<=(const LongAccumulator &l, const LongAccumulator &r);
-//     friend bool operator>=(const LongAccumulator &l, const LongAccumulator &r);
-
-//     friend bool operator==(const LongAccumulator &l, float r);
-//     friend bool operator!=(const LongAccumulator &l, float r);
-
-//     friend bool operator< (const LongAccumulator &l, float r);
-//     friend bool operator> (const LongAccumulator &l, float r);
-//     friend bool operator<=(const LongAccumulator &l, float r);
-//     friend bool operator>=(const LongAccumulator &l, float r);
-
-//     friend std::ostream &operator<<(std::ostream &out, const LongAccumulator &acc);
-
-//     float operator()(); // returns float value of this accumulator
-//   private:
-//     std::array<uint32_t, ACC_SIZE> acc {};
-
-//     // Adds the value to the word at index idx with carry/borrow
-//     void add(uint32_t idx, uint32_t val, bool negative);
-
-//     // Rounds mantissa according to currently selected rounding mode
-//     void round(const LongAccumulator &acc, float_components &components, int word_idx, int bit_idx);
-// };
 
 #endif  // LONGACCUMULATOR_H

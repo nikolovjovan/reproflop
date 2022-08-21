@@ -1,44 +1,36 @@
 #include "LongAccumulator.h"
+#include "LongAccumulatorCPU.h"
 
-#define LNGACC_KERNEL_FILENAME  "LongAccumulator.cl"
-
-#define LNGACC_KERNEL           "LongAccumulator"
-#define LNGACC_COMPLETE_KERNEL  "LongAccumulatorComplete"
-#define LNGACC_ROUND_KERNEL     "LongAccumulatorRound"
+#include <limits>
 
 using namespace std;
 
+#define OPENCL_PROGRAM_FILENAME "LongAccumulator.cl"
+#define ACCUMULATE_KERNEL_NAME  "LongAccumulatorAccumulate"
+#define MERGE_KERNEL_NAME       "LongAccumulatorMerge"
+
+#ifdef AMD
+constexpr char compileOptionsFormat[256] = "-DACCUMULATOR_SIZE=%u -DWARP_SIZE=%u -DACCUMULATE_WARP_COUNT=%u -DMERGE_WARP_COUNT=%u -DMERGE_ACCUMULATOR_COUNT=%u -DUSE_KNUTH";
+#else
+constexpr char compileOptionsFormat[256] = "-DACCUMULATOR_SIZE=%u -DWARP_SIZE=%u -DACCUMULATE_WARP_COUNT=%u -DMERGE_WARP_COUNT=%u -DMERGE_ACCUMULATOR_COUNT=%u -DUSE_KNUTH -DNVIDIA -cl-mad-enable -cl-fast-relaxed-math";
+#endif
+
 bool LongAccumulator::s_initializedOpenCL = false;
 bool LongAccumulator::s_initializedLngAcc = false;
+
 cl_platform_id LongAccumulator::s_platform = nullptr;
 cl_device_id LongAccumulator::s_device = nullptr;
 cl_context LongAccumulator::s_context = nullptr;
 cl_command_queue LongAccumulator::s_commandQueue = nullptr;
 
 cl_program LongAccumulator::s_program = nullptr;
-cl_kernel LongAccumulator::s_kernel = nullptr;
-cl_kernel LongAccumulator::s_complete = nullptr;
-cl_kernel LongAccumulator::s_round = nullptr;
+cl_kernel LongAccumulator::s_clkAccumulate = nullptr;
+cl_kernel LongAccumulator::s_clkMerge = nullptr;
 
-cl_mem LongAccumulator::s_data_acc = nullptr;
-
+cl_mem LongAccumulator::s_data_arr = nullptr;
 cl_mem LongAccumulator::s_data_res = nullptr;
 
-#ifdef AMD
-static const uint PARTIAL_SUPERACCS_COUNT = 1024;
-#else
-static const uint PARTIAL_SUPERACCS_COUNT = 512;
-#endif
-static const uint WORKGROUP_SIZE          = 256;
-static const uint MERGE_WORKGROUP_SIZE    = 64;
-static const uint MERGE_SUPERACCS_SIZE    = 128;
-static uint NbElements;
-
-#ifdef AMD
-static char compileOptions[256] = "-DWARP_COUNT=16 -DWARP_SIZE=16 -DMERGE_WORKGROUP_SIZE=64 -DMERGE_SUPERACCS_SIZE=128 -DUSE_KNUTH";
-#else
-static char compileOptions[256] = "-DWARP_COUNT=16 -DWARP_SIZE=16 -DMERGE_WORKGROUP_SIZE=64 -DMERGE_SUPERACCS_SIZE=128 -DUSE_KNUTH -DNVIDIA -cl-mad-enable -cl-fast-relaxed-math"; // -cl-nv-verbose";
-#endif
+cl_mem LongAccumulator::s_accumulators = nullptr;
 
 int LongAccumulator::InitializeOpenCL()
 {
@@ -96,19 +88,6 @@ int LongAccumulator::InitializeOpenCL()
         return -5;
     }
 
-    // Allocating OpenCL memory...
-    //
-    // s_data_acc = clCreateBuffer(s_context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, N * sizeof(cl_double), h_a, &ciErrNum);
-    // if (ciErrNum != CL_SUCCESS) {
-    //     cerr << "Error in clCreateBuffer for s_data_acc, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
-    //     exit(EXIT_FAILURE);
-    // }
-    // s_data_res = clCreateBuffer(s_context, CL_MEM_READ_WRITE, sizeof(cl_double), NULL, &ciErrNum);
-    // if (ciErrNum != CL_SUCCESS) {
-    //     cerr <<"Error in clCreateBuffer for s_data_res, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
-    //     exit(EXIT_FAILURE);
-    // }
-
     return 0;
 }
 
@@ -116,30 +95,16 @@ int LongAccumulator::CleanupOpenCL()
 {
     cl_int ciErrNum;
 
-    //Retrieving results...
-    // ciErrNum = clEnqueueReadBuffer(cqCommandQueue, s_data_res, CL_TRUE, 0, sizeof(cl_double), &h_Res, 0, NULL, NULL);
-    // if (ciErrNum != CL_SUCCESS) {
-    //     cerr << "ciErrNum = << ciErrNum << "\n";
-    //     cerr << "Error in clEnqueueReadBuffer Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
-    //     return -1;
-    // }
-
     if (!s_initializedOpenCL) {
         return 0;
     }
 
     // Release kernels and program
     //
-    CleanupAcc();
+    ciErrNum = CleanupAcc();
 
     // Shutting down and freeing memory...
     //
-    if (s_data_acc) {
-        clReleaseMemObject(s_data_acc);
-    }
-    if (s_data_res) {
-        clReleaseMemObject(s_data_res);
-    }
     if (s_commandQueue) {
         clReleaseCommandQueue(s_commandQueue);
     }
@@ -149,7 +114,7 @@ int LongAccumulator::CleanupOpenCL()
 
     s_initializedOpenCL = false;
 
-    return 0;
+    return ciErrNum;
 }
 
 cl_int LongAccumulator::InitializeAcc(
@@ -165,7 +130,7 @@ cl_int LongAccumulator::InitializeAcc(
     char path[256];
     strcpy(path, REPROFLOP_BINARY_DIR);
     strcat(path, "/include/cl/");
-    strcat(path, LNGACC_KERNEL_FILENAME);
+    strcat(path, OPENCL_PROGRAM_FILENAME);
 
     // Read the OpenCL kernel in from source file
     //
@@ -199,6 +164,8 @@ cl_int LongAccumulator::InitializeAcc(
 
     // Building LongAccumulator program
     //
+    char compileOptions[256];
+    snprintf(compileOptions, 256, compileOptionsFormat, ACCUMULATOR_SIZE, WARP_SIZE, ACCUMULATE_WARP_COUNT, MERGE_WARP_COUNT, MERGE_ACCUMULATOR_COUNT);
     ciErrNum = clBuildProgram(s_program, 0, NULL, compileOptions, NULL, NULL);
     if (ciErrNum != CL_SUCCESS) {
         cerr << "Error = " << ciErrNum << "\n";
@@ -215,38 +182,27 @@ cl_int LongAccumulator::InitializeAcc(
 
     // Create kernels
     //
-    s_kernel = clCreateKernel(s_program, LNGACC_KERNEL, &ciErrNum);
+    s_clkAccumulate = clCreateKernel(s_program, ACCUMULATE_KERNEL_NAME, &ciErrNum);
     if (ciErrNum != CL_SUCCESS) {
         cerr << "Error = " << ciErrNum << "\n";
         cerr << "Error in clCreateKernel: LongAccumulator, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
         return -5;
     }
-    s_complete = clCreateKernel(s_program, LNGACC_COMPLETE_KERNEL, &ciErrNum);
+    s_clkMerge = clCreateKernel(s_program, MERGE_KERNEL_NAME, &ciErrNum);
     if (ciErrNum != CL_SUCCESS) {
         cerr << "Error = " << ciErrNum << "\n";
         cerr << "Error in clCreateKernel: LongAccumulatorComplete, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
         return -6;
     }
-    s_round = clCreateKernel(s_program, LNGACC_ROUND_KERNEL, &ciErrNum);
-    if (ciErrNum != CL_SUCCESS) {
-        cerr << "Error = " << ciErrNum << "\n";
-        cerr << "Error in clCreateKernel: LongAccumulatorRound, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
-        return -7;
-    }
 
     // Allocate internal buffers
     //
-    // uint size = PARTIAL_SUPERACCS_COUNT * bin_count * sizeof(cl_long);
-    // d_PartialSuperaccs = clCreateBuffer(s_context, CL_MEM_READ_WRITE, size, NULL, &ciErrNum);
-    // if (ciErrNum != CL_SUCCESS) {
-    //     printf("Error in clCreateBuffer for d_PartialSuperaccs, Line %u in file %s !!!\n\n", __LINE__, __FILE__);
-    //     return EXIT_FAILURE;
-    // }
-    // d_Superacc = clCreateBuffer(s_context, CL_MEM_READ_WRITE, bin_count * sizeof(bintype), NULL, &ciErrNum);
-    // if (ciErrNum != CL_SUCCESS) {
-    //     printf("Error in clCreateBuffer for d_Superacc, Line %u in file %s !!!\n\n", __LINE__, __FILE__);
-    //     return EXIT_FAILURE;
-    // }
+    uint32_t size = ACCUMULATOR_COUNT * ACCUMULATOR_SIZE * sizeof(cl_uint);
+    s_accumulators = clCreateBuffer(s_context, CL_MEM_READ_WRITE, size, NULL, &ciErrNum);
+    if (ciErrNum != CL_SUCCESS) {
+        printf("Error in clCreateBuffer for s_accumulators, Line %u in file %s !!!\n\n", __LINE__, __FILE__);
+        return EXIT_FAILURE;
+    }
 
     // Deallocate temp storage
     //
@@ -264,8 +220,10 @@ cl_int LongAccumulator::CleanupAcc()
         return 0;
     }
 
-    if (s_data_acc) {
-        ciErrNum = clReleaseMemObject(s_data_acc);
+    // Release memory...
+    //
+    if (s_accumulators) {
+        ciErrNum = clReleaseMemObject(s_accumulators);
         if (ciErrNum != CL_SUCCESS) {
             cerr << "Error = " << ciErrNum << "\n";
             cerr << "Error in clReleaseMemObject, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
@@ -273,8 +231,8 @@ cl_int LongAccumulator::CleanupAcc()
         }
     }
 
-    if (s_kernel) {
-        ciErrNum = clReleaseKernel(s_kernel);
+    if (s_clkAccumulate) {
+        ciErrNum = clReleaseKernel(s_clkAccumulate);
         if (ciErrNum != CL_SUCCESS) {
             cerr << "Error = " << ciErrNum << "\n";
             cerr << "Error in clReleaseKernel: LongAccumulator, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
@@ -282,21 +240,12 @@ cl_int LongAccumulator::CleanupAcc()
         }
     }
 
-    if (s_complete) {
-        ciErrNum = clReleaseKernel(s_complete);
+    if (s_clkMerge) {
+        ciErrNum = clReleaseKernel(s_clkMerge);
         if (ciErrNum != CL_SUCCESS) {
             cerr << "Error = " << ciErrNum << "\n";
             cerr << "Error in clReleaseKernel: LongAccumulatorComplete, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
             res |= 1 << 2;
-        }
-    }
-
-    if (s_round) {
-        ciErrNum = clReleaseKernel(s_round);
-        if (ciErrNum != CL_SUCCESS) {
-            cerr << "Error = " << ciErrNum << "\n";
-            cerr << "Error in clReleaseKernel: LongAccumulatorRound, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
-            res |= 1 << 3;
         }
     }
 
@@ -312,408 +261,193 @@ cl_int LongAccumulator::CleanupAcc()
     return -res;
 }
 
-// #include <bitset>
-// #include <cfenv>
-// #include <cstring>
-// #include <iomanip>
-// #include <iostream>
+float LongAccumulator::Sum(const int N, float *arr, int *err)
+{
+    cl_int ciErrNum;
+    float result = 0;
 
-// using namespace std;
+    // Allocating OpenCL memory...
+    //
+    s_data_arr = clCreateBuffer(s_context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, N * sizeof(cl_float), arr, &ciErrNum);
+    if (ciErrNum != CL_SUCCESS) {
+        cerr << "Error in clCreateBuffer for s_data_arr, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        if (err != nullptr) {
+            *err = ciErrNum;
+        }
+        return numeric_limits<float>::signaling_NaN();
+    }
+    s_data_res = clCreateBuffer(s_context, CL_MEM_READ_WRITE, sizeof(cl_float), NULL, &ciErrNum);
+    if (ciErrNum != CL_SUCCESS) {
+        cerr <<"Error in clCreateBuffer for s_data_res, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        if (err != nullptr) {
+            *err = ciErrNum;
+        }
+        return numeric_limits<float>::signaling_NaN();
+    }
 
-// float_components extractComponents(float f)
-// {
-//     float_components components;
-//     uint32_t tmp;
-//     static_assert(sizeof(uint32_t) == sizeof(float));
-//     memcpy(&tmp, &f, sizeof(float));
-//     components.negative = tmp & 0x80000000;
-//     components.exponent = (tmp >> 23) & 0xFF;
-//     components.mantissa = tmp & 0x7FFFFF;
-//     if (components.exponent != 0x00 && components.exponent != 0xFF) {
-//         components.mantissa |= 0x800000; // hidden bit is equal to 1
-//     }
-//     return components;
-// }
+    size_t global_work_size, local_work_size;
 
-// float packToFloat(float_components components)
-// {
-//     uint32_t tmp = (components.negative ? 0x80000000 : 0x00000000) | (components.exponent << 23) |
-//                    (components.mantissa & 0x7FFFFF);
-//     float f;
-//     static_assert(sizeof(uint32_t) == sizeof(float));
-//     memcpy(&f, &tmp, sizeof(uint32_t));
-//     return f;
-// }
+    {
+        local_work_size = ACCUMULATE_WORKGROUP_SIZE;
+        global_work_size = local_work_size * ACCUMULATOR_COUNT;
 
-// LongAccumulator::LongAccumulator(float f)
-// {
-//     *this += f;
-// }
+        cl_uint i = 0;
+        ciErrNum  = clSetKernelArg(s_clkAccumulate, i++, sizeof(cl_uint), (void *)&N);
+        ciErrNum |= clSetKernelArg(s_clkAccumulate, i++, sizeof(cl_mem),  (void *)&s_data_arr);
+        ciErrNum |= clSetKernelArg(s_clkAccumulate, i++, sizeof(cl_mem),  (void *)&s_accumulators);
+        if (ciErrNum != CL_SUCCESS) {
+            printf("Error in clSetKernelArg, Line %u in file %s !!!\n\n", __LINE__, __FILE__);
+            if (err != nullptr) {
+                *err = ciErrNum;
+            }
+            return numeric_limits<float>::signaling_NaN();
+        }
 
-// LongAccumulator &LongAccumulator::operator+=(const LongAccumulator &other)
-// {
-//     for (uint32_t i = 0; i < ACC_SIZE; ++i) {
-//         add(i, other.acc[i], false);
-//     }
-//     return *this;
-// }
+        ciErrNum = clEnqueueNDRangeKernel(
+            s_commandQueue,
+            s_clkAccumulate,
+            /* work_dim */ 1,
+            /* global_work_offset */ NULL,
+            &global_work_size,
+            &local_work_size,
+            /* num_events_in_wait_list */ 0,
+            /* event_wait_list* */ NULL,
+            /* event */ NULL);
+        if (ciErrNum != CL_SUCCESS) {
+            printf("Error in clEnqueueNDRangeKernel, Line %u in file %s !!!\n\n", __LINE__, __FILE__);
+            if (err != nullptr) {
+                *err = ciErrNum;
+            }
+            return numeric_limits<float>::signaling_NaN();
+        }
+    }
 
-// LongAccumulator &LongAccumulator::operator-=(const LongAccumulator &other)
-// {
-//     for (uint32_t i = 0; i < ACC_SIZE; ++i) {
-//         add(i, other.acc[i], true);
-//     }
-//     return *this;
-// }
+    // Allocate internal buffers
+    //
+    uint32_t size = ACCUMULATOR_COUNT * ACCUMULATOR_SIZE * sizeof(cl_uint);
+    uint32_t *accumulators = (uint32_t*) malloc(size * sizeof(uint32_t));
 
-// LongAccumulator &LongAccumulator::operator+=(float f)
-// {
-//     // Extract floating-point components - sign, exponent and mantissa
-//     float_components components = extractComponents(f);
-//     // Calculate the leftmost word that will be affected
-//     uint32_t k = (components.exponent + 22) >> 5;
-//     // Check if more than one word is affected (split mantissa)
-//     bool split = ((components.exponent - 1) >> 5) < k;
-//     // Calculate number of bits in the higher part of the mantissa
-//     uint32_t hi_width = (components.exponent - 9) & 0x1F;
-//     if (!split) {
-//         add(k, components.mantissa << (hi_width - 24), components.negative);
-//     } else {
-//         add(k - 1, components.mantissa << (8 + hi_width), components.negative);
-//         add(k, components.mantissa >> (24 - hi_width), components.negative);
-//     }
-//     return *this;
-// }
+    // Retrieve internal buffers.
+    //
+    ciErrNum = clEnqueueReadBuffer(s_commandQueue, s_accumulators, CL_TRUE, 0, size, accumulators, 0, NULL, NULL);
+    if (ciErrNum != CL_SUCCESS) {
+        printf("ciErrNum = %d\n", ciErrNum);
+        printf("Error in clEnqueueReadBuffer Line %u in file %s !!!\n\n", __LINE__, __FILE__);
+        exit(EXIT_FAILURE);
+    }
 
-// LongAccumulator &LongAccumulator::operator-=(float f)
-// {
-//     return *this += -f;
-// }
+    for (int i = 0; i < ACCUMULATOR_COUNT; ++i) {
+        bool allzero = true;
+        for (int j = 0; j < ACCUMULATOR_SIZE && allzero; ++j) {
+            if (accumulators[i * ACCUMULATOR_SIZE + j]) {
+                allzero = false;
+            }
+        }
+        if (!allzero) {
+            printf("%05u: ", i);
+            for (int j = 0; j < ACCUMULATOR_SIZE; ++j) {
+                printf("%u%c", accumulators[i * ACCUMULATOR_SIZE + j], j < ACCUMULATOR_SIZE - 1 ? ' ' : '\n');
+            }
+            LongAccumulatorCPU cpuLacc (&accumulators[i * ACCUMULATOR_SIZE]);
+            printf("CPU Lacc conversion: %f\n", cpuLacc ());
+        }
+    }
 
-// LongAccumulator &LongAccumulator::operator=(float f)
-// {
-//     acc = {};
-//     return f == 0 ? *this : *this += f;
-// }
+    {
+        local_work_size = MERGE_WORKGROUP_SIZE;
+        global_work_size = local_work_size * (ACCUMULATOR_COUNT / MERGE_ACCUMULATOR_COUNT);
 
-// LongAccumulator LongAccumulator::operator+() const
-// {
-//     return *this;
-// }
+        cl_uint i = 0;
+        ciErrNum  = clSetKernelArg(s_clkMerge, i++, sizeof(cl_mem),  (void *)&s_accumulators);
+        ciErrNum |= clSetKernelArg(s_clkMerge, i++, sizeof(cl_mem),  (void *)&s_data_res);
+        if (ciErrNum != CL_SUCCESS) {
+            printf("Error in clSetKernelArg, Line %u in file %s !!!\n\n", __LINE__, __FILE__);
+            if (err != nullptr) {
+                *err = ciErrNum;
+            }
+            return numeric_limits<float>::signaling_NaN();
+        }
 
-// LongAccumulator LongAccumulator::operator-() const
-// {
-//     LongAccumulator res;
-//     res -= *this;
-//     return res;
-// }
+        ciErrNum = clEnqueueNDRangeKernel(
+            s_commandQueue,
+            s_clkMerge,
+            /* work_dim */ 1,
+            /* global_work_offset */ NULL,
+            &global_work_size,
+            &local_work_size,
+            /* num_events_in_wait_list */ 0,
+            /* event_wait_list* */ NULL,
+            /* event */ NULL);
+        if (ciErrNum != CL_SUCCESS) {
+            printf("ciErrNum = %d\n", ciErrNum);
+            printf("Error in clEnqueueNDRangeKernel, Line %u in file %s !!!\n\n", __LINE__, __FILE__);
+            if (err != nullptr) {
+                *err = ciErrNum;
+            }
+            return numeric_limits<float>::signaling_NaN();
+        }
+    }
 
-// LongAccumulator operator+(LongAccumulator acc, const LongAccumulator &other)
-// {
-//     return acc += other;
-// }
+    // Retrieve result.
+    //
+    ciErrNum = clEnqueueReadBuffer(s_commandQueue, s_data_res, CL_TRUE, 0, sizeof(cl_float), &result, 0, NULL, NULL);
+    if (ciErrNum != CL_SUCCESS) {
+        printf("ciErrNum = %d\n", ciErrNum);
+        printf("Error in clEnqueueReadBuffer Line %u in file %s !!!\n\n", __LINE__, __FILE__);
+        exit(EXIT_FAILURE);
+    }
 
-// LongAccumulator operator-(LongAccumulator acc, const LongAccumulator &other)
-// {
-//     return acc -= other;
-// }
+    // Retrieve internal buffers.
+    //
+    ciErrNum = clEnqueueReadBuffer(s_commandQueue, s_accumulators, CL_TRUE, 0, size, accumulators, 0, NULL, NULL);
+    if (ciErrNum != CL_SUCCESS) {
+        printf("ciErrNum = %d\n", ciErrNum);
+        printf("Error in clEnqueueReadBuffer Line %u in file %s !!!\n\n", __LINE__, __FILE__);
+        exit(EXIT_FAILURE);
+    }
 
-// LongAccumulator operator+(LongAccumulator acc, float f)
-// {
-//     return acc += f;
-// }
+    printf("After merge:\n");
 
-// LongAccumulator operator-(LongAccumulator acc, float f)
-// {
-//     return acc -= f;
-// }
+    for (int i = 0; i < ACCUMULATOR_COUNT; ++i) {
+        bool allzero = true;
+        for (int j = 0; j < ACCUMULATOR_SIZE && allzero; ++j) {
+            if (accumulators[i * ACCUMULATOR_SIZE + j]) {
+                allzero = false;
+            }
+        }
+        if (!allzero) {
+            printf("%.5u: ", i);
+            for (int j = 0; j < ACCUMULATOR_SIZE; ++j) {
+                printf("%u%c", accumulators[i * ACCUMULATOR_SIZE + j], j < ACCUMULATOR_SIZE - 1 ? ' ' : '\n');
+            }
+            LongAccumulatorCPU cpuLacc (&accumulators[i * ACCUMULATOR_SIZE]);
+            printf("CPU Lacc conversion: %f\n", cpuLacc ());
+        }
+    }
 
-// bool operator==(const LongAccumulator &l, const LongAccumulator &r)
-// {
-//     for (int i = 0; i < ACC_SIZE; ++i) {
-//         if (l.acc[i] != r.acc[i]) {
-//             return false;
-//         }
-//     }
-//     return true;
-// }
+    free(accumulators);
 
-// bool operator!=(const LongAccumulator &l, const LongAccumulator &r)
-// {
-//     return !(l == r);
-// }
+    // Release memory...
+    //
+    if (s_data_arr) {
+        ciErrNum = clReleaseMemObject(s_data_arr);
+        if (ciErrNum != CL_SUCCESS) {
+            cerr << "Error = " << ciErrNum << "\n";
+            cerr << "Error in clReleaseMemObject, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        }
+    }
 
-// bool operator<(const LongAccumulator &l, const LongAccumulator &r)
-// {
-//     bool sign_l = l.acc[ACC_SIZE - 1] & 0x80000000;
-//     bool sign_r = r.acc[ACC_SIZE - 1] & 0x80000000;
-//     if (sign_l && !sign_r) {
-//         return true;
-//     } else if (!sign_l && sign_r) {
-//         return false;
-//     }
-//     LongAccumulator positive_l = sign_l ? -l : l;
-//     LongAccumulator positive_r = sign_r ? -r : r;
-//     int i = ACC_SIZE - 1;
-//     while (i >= 0 && positive_l.acc[i] == positive_r.acc[i]) {
-//         i--;
-//     }
-//     if (i < 0) {
-//         return false; // equal
-//     }
-//     return sign_l ? positive_l.acc[i] > positive_r.acc[i]
-//                   : positive_l.acc[i] < positive_r.acc[i]; // for negative numbers invert
-// }
+    if (s_data_res) {
+        ciErrNum = clReleaseMemObject(s_data_res);
+        if (ciErrNum != CL_SUCCESS) {
+            cerr << "Error = " << ciErrNum << "\n";
+            cerr << "Error in clReleaseMemObject, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        }
+    }
 
-// bool operator>(const LongAccumulator &l, const LongAccumulator &r)
-// {
-//     return r < l;
-// }
+    if (err != nullptr) {
+        *err = ciErrNum;
+    }
 
-// bool operator<=(const LongAccumulator &l, const LongAccumulator &r)
-// {
-//     return !(l > r);
-// }
-
-// bool operator>=(const LongAccumulator &l, const LongAccumulator &r)
-// {
-//     return !(l < r);
-// }
-
-// bool operator==(const LongAccumulator &l, float r)
-// {
-//     return l == LongAccumulator(r);
-// }
-
-// bool operator!=(const LongAccumulator &l, float r)
-// {
-//     return l != LongAccumulator(r);
-// }
-
-// bool operator<(const LongAccumulator &l, float r)
-// {
-//     return l < LongAccumulator(r);
-// }
-
-// bool operator>(const LongAccumulator &l, float r)
-// {
-//     return l > LongAccumulator(r);
-// }
-
-// bool operator<=(const LongAccumulator &l, float r)
-// {
-//     return l <= LongAccumulator(r);
-// }
-
-// bool operator>=(const LongAccumulator &l, float r)
-// {
-//     return l >= LongAccumulator(r);
-// }
-
-// ostream &operator<<(ostream &out, const LongAccumulator &acc)
-// {
-//     bool sign = acc.acc[ACC_SIZE - 1] & 0x80000000;
-//     LongAccumulator positive_acc = sign ? -acc : acc;
-//     int startIdx = ACC_SIZE - 1, endIdx = 0;
-//     while (startIdx >= 0 && positive_acc.acc[startIdx] == 0) {
-//         startIdx--;
-//     }
-//     if (startIdx < 4) {
-//         startIdx = 4;
-//     }
-//     while (endIdx < ACC_SIZE && positive_acc.acc[endIdx] == 0) {
-//         endIdx++;
-//     }
-//     if (endIdx > 4) {
-//         endIdx = 4;
-//     }
-//     out << (sign ? "- " : "+ ");
-//     for (int idx = startIdx; idx >= endIdx; --idx) {
-//         bitset<32> bits(positive_acc.acc[idx]);
-//         int startBit = 31, endBit = 0;
-//         if (idx == startIdx) {
-//             while (startBit >= 0 && !bits.test(startBit)) {
-//                 startBit--;
-//             }
-//         }
-//         if (idx == endIdx) {
-//             while (endBit < 32 && !bits.test(endBit)) {
-//                 endBit++;
-//             }
-//         }
-//         if (idx == 4) {
-//             if (startBit < 21) {
-//                 startBit = 21; // include first bit before .
-//             }
-//             if (endBit > 20) {
-//                 endBit = 20; // include first bit after .
-//             }
-//             for (int i = startBit; i > 20; --i) {
-//                 out << bits.test(i);
-//             }
-//             out << " . ";
-//             for (int i = 20; i >= endBit; --i) {
-//                 out << bits.test(i);
-//             }
-//         } else {
-//             for (int i = startBit; i >= endBit; --i) {
-//                 out << bits.test(i);
-//             }
-//         }
-//         if (idx > endIdx) {
-//             out << ' ';
-//         }
-//     }
-//     return out;
-// }
-
-// float LongAccumulator::operator()()
-// {
-//     float_components components;
-
-//     components.negative = acc[ACC_SIZE - 1] & 0x80000000;
-//     components.exponent = 0;
-//     components.mantissa = 0;
-
-//     LongAccumulator absolute = components.negative ? -*this : *this;
-
-//     // Calculate the position of the most significant non-zero word...
-//     int word_idx = ACC_SIZE - 1;
-//     while (word_idx >= 0 && absolute.acc[word_idx] == 0) {
-//         word_idx--;
-//     }
-
-//     // Check if zero...
-//     if (word_idx < 0) {
-//         return packToFloat(components);
-//     }
-
-//     // Calculate the position of the most significant bit...
-//     bitset<32> bits(absolute.acc[word_idx]);
-//     int bit_idx = 31;
-//     while (bit_idx >= 0 && !bits.test(bit_idx)) {
-//         bit_idx--;
-//     }
-
-//     // Check if subnormal...
-//     if (word_idx == 0 && bit_idx < 23) {
-//         components.mantissa = absolute.acc[0];
-//         return packToFloat(components);
-//     }
-
-//     // Calculate the exponent using the inverse of the formula used for "sliding" the mantissa into the accumulator.
-//     components.exponent = (word_idx << 5) + bit_idx - 22;
-
-//     // Check if infinity...
-//     if (components.exponent > 0xFE) {
-//         components.exponent = 0xFF;
-//         return packToFloat(components);
-//     }
-
-//     // Extract bits of mantissa from current word...
-//     uint32_t mask = ((uint64_t) 1 << (bit_idx + 1)) - 1;
-//     components.mantissa = absolute.acc[word_idx] & mask;
-
-//     // Extract mantissa and round according to currently selected rounding mode...
-//     if (bit_idx > 23) {
-//         components.mantissa >>= bit_idx - 23;
-//         round(absolute, components, word_idx, bit_idx - 24);
-//     } else if (bit_idx == 23) {
-//         round(absolute, components, word_idx - 1, 31);
-//     } else {
-//         components.mantissa <<= 23 - bit_idx;
-//         components.mantissa |= absolute.acc[word_idx - 1] >> (bit_idx + 9);
-//         round(absolute, components, word_idx - 1, bit_idx + 8);
-//     }
-
-//     return packToFloat(components);
-// }
-
-// void LongAccumulator::add(uint32_t idx, uint32_t val, bool negative)
-// {
-//     while (idx < ACC_SIZE) {
-//         uint32_t old = acc[idx];
-//         if (!negative) {
-//             acc[idx] += val;
-//             if (acc[idx] < old) { // overflow
-//                 ++idx;
-//                 val = 1;
-//             } else break;
-//         } else {
-//             acc[idx] -= val;
-//             if (acc[idx] > old) { // underflow
-//                 ++idx;
-//                 val = 1;
-//             } else break;
-//         }
-//     }
-// }
-
-// void LongAccumulator::round(const LongAccumulator &acc, float_components &components, int word_idx, int bit_idx)
-// {
-//     int rounding_mode = fegetround();
-//     // negative if cannot be determined
-//     if (rounding_mode < 0) {
-//         rounding_mode = FE_TONEAREST;
-//     }
-//     bitset<32> bits(acc.acc[word_idx]);
-//     if (rounding_mode == FE_TONEAREST) {
-//         if (!bits.test(bit_idx)) {
-//             return; // case 1
-//         }
-//         bool allzero = true;
-//         for (int i = bit_idx - 1; allzero && i >= 0; --i) {
-//             if (bits.test(i)) {
-//                 allzero = false;
-//             }
-//         }
-//         if (allzero) {
-//             for (int i = word_idx - 1; allzero && i >= 0; --i) {
-//                 if (acc.acc[i] > 0) {
-//                     allzero = false;
-//                 }
-//             }
-//         }
-//         if (!allzero) {
-//             components.mantissa++; // case 2, need to check for overflow
-//         } else if ((components.mantissa & 0x1) == 0) {
-//             return; // case 3a
-//         } else {
-//             components.mantissa++; // case 3b, need to check for overflow
-//         }
-//     } else if (rounding_mode == FE_UPWARD && !components.negative ||
-//                rounding_mode == FE_DOWNWARD && components.negative) {
-//         bool allzero = true;
-//         for (int i = bit_idx; allzero && i >= 0; --i) {
-//             if (bits.test(i)) {
-//                 allzero = false;
-//             }
-//         }
-//         if (allzero) {
-//             for (int i = word_idx - 1; allzero && i >= 0; --i) {
-//                 if (acc.acc[i] > 0) {
-//                     allzero = false;
-//                 }
-//             }
-//         }
-//         if (!allzero) {
-//             components.mantissa++; // case 1, need to check for overflow
-//         } else {
-//             return; // case 2
-//         }
-//     } else {
-//         // FE_TOWARDSZERO - always ignores other bits
-//         // FE_UPWARD while negative - since mantissa is unsigned, always returns lower value (ignores other bits)
-//         // FE_DOWNWARD while positive - same as FE_TOWARDSZERO in this case
-//         return;
-//     }
-//     // Check if rounding caused overflow...
-//     if (components.mantissa > 0xFFFFFF) {
-//         components.mantissa >>= 1;
-//         components.exponent++;
-//         if (components.exponent > 0xFE) {
-//             components.exponent = 0xFF;
-//             components.mantissa = 0;
-//         }
-//     }
-// }
+    return result;
+}

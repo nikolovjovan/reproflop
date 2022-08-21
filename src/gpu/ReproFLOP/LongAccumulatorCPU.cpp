@@ -1,0 +1,414 @@
+#include "LongAccumulatorCPU.h"
+
+#include <bitset>
+#include <cfenv>
+#include <cstring>
+#include <iomanip>
+#include <iostream>
+
+using namespace std;
+
+float_components extractComponents(float f)
+{
+    float_components components;
+    uint32_t tmp;
+    static_assert(sizeof(uint32_t) == sizeof(float));
+    memcpy(&tmp, &f, sizeof(float));
+    components.negative = tmp & 0x80000000;
+    components.exponent = (tmp >> 23) & 0xFF;
+    components.mantissa = tmp & 0x7FFFFF;
+    if (components.exponent != 0x00 && components.exponent != 0xFF) {
+        components.mantissa |= 0x800000; // hidden bit is equal to 1
+    }
+    return components;
+}
+
+float packToFloat(float_components components)
+{
+    uint32_t tmp = (components.negative ? 0x80000000 : 0x00000000) | (components.exponent << 23) |
+                   (components.mantissa & 0x7FFFFF);
+    float f;
+    static_assert(sizeof(uint32_t) == sizeof(float));
+    memcpy(&f, &tmp, sizeof(uint32_t));
+    return f;
+}
+
+LongAccumulatorCPU::LongAccumulatorCPU(float f)
+{
+    *this += f;
+}
+
+LongAccumulatorCPU::LongAccumulatorCPU(uint32_t *gpuAcc)
+{
+    for (int i = 0; i < ACC_SIZE; ++i) {
+        acc[i] = gpuAcc[i];
+    }
+}
+
+LongAccumulatorCPU &LongAccumulatorCPU::operator+=(const LongAccumulatorCPU &other)
+{
+    for (uint32_t i = 0; i < ACC_SIZE; ++i) {
+        add(i, other.acc[i], false);
+    }
+    return *this;
+}
+
+LongAccumulatorCPU &LongAccumulatorCPU::operator-=(const LongAccumulatorCPU &other)
+{
+    for (uint32_t i = 0; i < ACC_SIZE; ++i) {
+        add(i, other.acc[i], true);
+    }
+    return *this;
+}
+
+LongAccumulatorCPU &LongAccumulatorCPU::operator+=(float f)
+{
+    // Extract floating-point components - sign, exponent and mantissa
+    float_components components = extractComponents(f);
+    // Calculate the leftmost word that will be affected
+    uint32_t k = (components.exponent + 22) >> 5;
+    // Check if more than one word is affected (split mantissa)
+    bool split = ((components.exponent - 1) >> 5) < k;
+    // Calculate number of bits in the higher part of the mantissa
+    uint32_t hi_width = (components.exponent - 9) & 0x1F;
+    if (!split) {
+        add(k, components.mantissa << (hi_width - 24), components.negative);
+    } else {
+        add(k - 1, components.mantissa << (8 + hi_width), components.negative);
+        add(k, components.mantissa >> (24 - hi_width), components.negative);
+    }
+    return *this;
+}
+
+LongAccumulatorCPU &LongAccumulatorCPU::operator-=(float f)
+{
+    return *this += -f;
+}
+
+LongAccumulatorCPU &LongAccumulatorCPU::operator=(float f)
+{
+    acc = {};
+    return f == 0 ? *this : *this += f;
+}
+
+LongAccumulatorCPU LongAccumulatorCPU::operator+() const
+{
+    return *this;
+}
+
+LongAccumulatorCPU LongAccumulatorCPU::operator-() const
+{
+    LongAccumulatorCPU res;
+    res -= *this;
+    return res;
+}
+
+LongAccumulatorCPU operator+(LongAccumulatorCPU acc, const LongAccumulatorCPU &other)
+{
+    return acc += other;
+}
+
+LongAccumulatorCPU operator-(LongAccumulatorCPU acc, const LongAccumulatorCPU &other)
+{
+    return acc -= other;
+}
+
+LongAccumulatorCPU operator+(LongAccumulatorCPU acc, float f)
+{
+    return acc += f;
+}
+
+LongAccumulatorCPU operator-(LongAccumulatorCPU acc, float f)
+{
+    return acc -= f;
+}
+
+bool operator==(const LongAccumulatorCPU &l, const LongAccumulatorCPU &r)
+{
+    for (int i = 0; i < ACC_SIZE; ++i) {
+        if (l.acc[i] != r.acc[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool operator!=(const LongAccumulatorCPU &l, const LongAccumulatorCPU &r)
+{
+    return !(l == r);
+}
+
+bool operator<(const LongAccumulatorCPU &l, const LongAccumulatorCPU &r)
+{
+    bool sign_l = l.acc[ACC_SIZE - 1] & 0x80000000;
+    bool sign_r = r.acc[ACC_SIZE - 1] & 0x80000000;
+    if (sign_l && !sign_r) {
+        return true;
+    } else if (!sign_l && sign_r) {
+        return false;
+    }
+    LongAccumulatorCPU positive_l = sign_l ? -l : l;
+    LongAccumulatorCPU positive_r = sign_r ? -r : r;
+    int i = ACC_SIZE - 1;
+    while (i >= 0 && positive_l.acc[i] == positive_r.acc[i]) {
+        i--;
+    }
+    if (i < 0) {
+        return false; // equal
+    }
+    return sign_l ? positive_l.acc[i] > positive_r.acc[i]
+                  : positive_l.acc[i] < positive_r.acc[i]; // for negative numbers invert
+}
+
+bool operator>(const LongAccumulatorCPU &l, const LongAccumulatorCPU &r)
+{
+    return r < l;
+}
+
+bool operator<=(const LongAccumulatorCPU &l, const LongAccumulatorCPU &r)
+{
+    return !(l > r);
+}
+
+bool operator>=(const LongAccumulatorCPU &l, const LongAccumulatorCPU &r)
+{
+    return !(l < r);
+}
+
+bool operator==(const LongAccumulatorCPU &l, float r)
+{
+    return l == LongAccumulatorCPU(r);
+}
+
+bool operator!=(const LongAccumulatorCPU &l, float r)
+{
+    return l != LongAccumulatorCPU(r);
+}
+
+bool operator<(const LongAccumulatorCPU &l, float r)
+{
+    return l < LongAccumulatorCPU(r);
+}
+
+bool operator>(const LongAccumulatorCPU &l, float r)
+{
+    return l > LongAccumulatorCPU(r);
+}
+
+bool operator<=(const LongAccumulatorCPU &l, float r)
+{
+    return l <= LongAccumulatorCPU(r);
+}
+
+bool operator>=(const LongAccumulatorCPU &l, float r)
+{
+    return l >= LongAccumulatorCPU(r);
+}
+
+ostream &operator<<(ostream &out, const LongAccumulatorCPU &acc)
+{
+    bool sign = acc.acc[ACC_SIZE - 1] & 0x80000000;
+    LongAccumulatorCPU positive_acc = sign ? -acc : acc;
+    int startIdx = ACC_SIZE - 1, endIdx = 0;
+    while (startIdx >= 0 && positive_acc.acc[startIdx] == 0) {
+        startIdx--;
+    }
+    if (startIdx < 4) {
+        startIdx = 4;
+    }
+    while (endIdx < ACC_SIZE && positive_acc.acc[endIdx] == 0) {
+        endIdx++;
+    }
+    if (endIdx > 4) {
+        endIdx = 4;
+    }
+    out << (sign ? "- " : "+ ");
+    for (int idx = startIdx; idx >= endIdx; --idx) {
+        bitset<32> bits(positive_acc.acc[idx]);
+        int startBit = 31, endBit = 0;
+        if (idx == startIdx) {
+            while (startBit >= 0 && !bits.test(startBit)) {
+                startBit--;
+            }
+        }
+        if (idx == endIdx) {
+            while (endBit < 32 && !bits.test(endBit)) {
+                endBit++;
+            }
+        }
+        if (idx == 4) {
+            if (startBit < 21) {
+                startBit = 21; // include first bit before .
+            }
+            if (endBit > 20) {
+                endBit = 20; // include first bit after .
+            }
+            for (int i = startBit; i > 20; --i) {
+                out << bits.test(i);
+            }
+            out << " . ";
+            for (int i = 20; i >= endBit; --i) {
+                out << bits.test(i);
+            }
+        } else {
+            for (int i = startBit; i >= endBit; --i) {
+                out << bits.test(i);
+            }
+        }
+        if (idx > endIdx) {
+            out << ' ';
+        }
+    }
+    return out;
+}
+
+float LongAccumulatorCPU::operator()()
+{
+    float_components components;
+
+    components.negative = acc[ACC_SIZE - 1] & 0x80000000;
+    components.exponent = 0;
+    components.mantissa = 0;
+
+    LongAccumulatorCPU absolute = components.negative ? -*this : *this;
+
+    // Calculate the position of the most significant non-zero word...
+    int word_idx = ACC_SIZE - 1;
+    while (word_idx >= 0 && absolute.acc[word_idx] == 0) {
+        word_idx--;
+    }
+
+    // Check if zero...
+    if (word_idx < 0) {
+        return packToFloat(components);
+    }
+
+    // Calculate the position of the most significant bit...
+    bitset<32> bits(absolute.acc[word_idx]);
+    int bit_idx = 31;
+    while (bit_idx >= 0 && !bits.test(bit_idx)) {
+        bit_idx--;
+    }
+
+    // Check if subnormal...
+    if (word_idx == 0 && bit_idx < 23) {
+        components.mantissa = absolute.acc[0];
+        return packToFloat(components);
+    }
+
+    // Calculate the exponent using the inverse of the formula used for "sliding" the mantissa into the accumulator.
+    components.exponent = (word_idx << 5) + bit_idx - 22;
+
+    // Check if infinity...
+    if (components.exponent > 0xFE) {
+        components.exponent = 0xFF;
+        return packToFloat(components);
+    }
+
+    // Extract bits of mantissa from current word...
+    uint32_t mask = ((uint64_t) 1 << (bit_idx + 1)) - 1;
+    components.mantissa = absolute.acc[word_idx] & mask;
+
+    // Extract mantissa and round according to currently selected rounding mode...
+    if (bit_idx > 23) {
+        components.mantissa >>= bit_idx - 23;
+        round(absolute, components, word_idx, bit_idx - 24);
+    } else if (bit_idx == 23) {
+        round(absolute, components, word_idx - 1, 31);
+    } else {
+        components.mantissa <<= 23 - bit_idx;
+        components.mantissa |= absolute.acc[word_idx - 1] >> (bit_idx + 9);
+        round(absolute, components, word_idx - 1, bit_idx + 8);
+    }
+
+    return packToFloat(components);
+}
+
+void LongAccumulatorCPU::add(uint32_t idx, uint32_t val, bool negative)
+{
+    while (idx < ACC_SIZE) {
+        uint32_t old = acc[idx];
+        if (!negative) {
+            acc[idx] += val;
+            if (acc[idx] < old) { // overflow
+                ++idx;
+                val = 1;
+            } else break;
+        } else {
+            acc[idx] -= val;
+            if (acc[idx] > old) { // underflow
+                ++idx;
+                val = 1;
+            } else break;
+        }
+    }
+}
+
+void LongAccumulatorCPU::round(const LongAccumulatorCPU &acc, float_components &components, int word_idx, int bit_idx)
+{
+    int rounding_mode = fegetround();
+    // negative if cannot be determined
+    if (rounding_mode < 0) {
+        rounding_mode = FE_TONEAREST;
+    }
+    bitset<32> bits(acc.acc[word_idx]);
+    if (rounding_mode == FE_TONEAREST) {
+        if (!bits.test(bit_idx)) {
+            return; // case 1
+        }
+        bool allzero = true;
+        for (int i = bit_idx - 1; allzero && i >= 0; --i) {
+            if (bits.test(i)) {
+                allzero = false;
+            }
+        }
+        if (allzero) {
+            for (int i = word_idx - 1; allzero && i >= 0; --i) {
+                if (acc.acc[i] > 0) {
+                    allzero = false;
+                }
+            }
+        }
+        if (!allzero) {
+            components.mantissa++; // case 2, need to check for overflow
+        } else if ((components.mantissa & 0x1) == 0) {
+            return; // case 3a
+        } else {
+            components.mantissa++; // case 3b, need to check for overflow
+        }
+    } else if (rounding_mode == FE_UPWARD && !components.negative ||
+               rounding_mode == FE_DOWNWARD && components.negative) {
+        bool allzero = true;
+        for (int i = bit_idx; allzero && i >= 0; --i) {
+            if (bits.test(i)) {
+                allzero = false;
+            }
+        }
+        if (allzero) {
+            for (int i = word_idx - 1; allzero && i >= 0; --i) {
+                if (acc.acc[i] > 0) {
+                    allzero = false;
+                }
+            }
+        }
+        if (!allzero) {
+            components.mantissa++; // case 1, need to check for overflow
+        } else {
+            return; // case 2
+        }
+    } else {
+        // FE_TOWARDSZERO - always ignores other bits
+        // FE_UPWARD while negative - since mantissa is unsigned, always returns lower value (ignores other bits)
+        // FE_DOWNWARD while positive - same as FE_TOWARDSZERO in this case
+        return;
+    }
+    // Check if rounding caused overflow...
+    if (components.mantissa > 0xFFFFFF) {
+        components.mantissa >>= 1;
+        components.exponent++;
+        if (components.exponent > 0xFE) {
+            components.exponent = 0xFF;
+            components.mantissa = 0;
+        }
+    }
+}
