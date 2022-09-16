@@ -1,4 +1,3 @@
-#include "LongAccumulator.h"
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -8,6 +7,9 @@
 #include <random>
 #include <thread>
 #include <vector>
+
+#include "LongAccumulator.h"
+#include "LongAccumulatorCPU.h"
 
 using namespace std;
 
@@ -44,14 +46,24 @@ default_random_engine *shuffle_engine;
 int *start_indices;
 vector<int> *reduction_map;
 float *partial_sums;
-LongAccumulator *partial_sum_accs;
 pthread_barrier_t barrier;
 bool result_valid;
 
 // Results
 
-float sum_sequential, sum_parallel, sum_sequential_reproducible, sum_parallel_reproducible;
-uint64_t time_sequential, time_parallel, time_sequential_reproducible, time_parallel_reproducible;
+float sum_sequential, sum_parallel, sum_sequential_reproducible, sum_gpu_reproducible;
+uint64_t time_sequential, time_parallel, time_sequential_reproducible, time_gpu_reproducible;
+
+typedef struct {
+    // Input
+    //
+    int tid;
+
+    // Output
+    //
+    float result;
+    uint64_t time;
+} kernel_params;
 
 void print_usage(char program_name[])
 {
@@ -229,7 +241,7 @@ void generate_elements()
     cout << "Successfully generated " << element_count << " random floating-point numbers." << endl;
 }
 
-void run_sequential()
+void run_sequential(float& result, uint64_t& time)
 {
     chrono::steady_clock::time_point start;
     float sum;
@@ -245,11 +257,11 @@ void run_sequential()
             sum += (*elements)[i];
         }
         if (run_idx == 0) {
-            sum_sequential = sum;
-            time_sequential = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
-            cout << "Sequential sum: " << fixed << setprecision(10) << sum_sequential << " (" << scientific
-                 << setprecision(10) << sum_sequential << ')' << endl;
-        } else if (sum != sum_sequential) {
+            result = sum;
+            time = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
+            cout << "Sequential sum: " << fixed << setprecision(10) << result << " (" << scientific
+                 << setprecision(10) << result << ')' << endl;
+        } else if (sum != result) {
             cout << "Sequential sum not reproducible after " << run_idx << " runs!" << endl;
             break;
         }
@@ -260,16 +272,14 @@ void run_sequential()
     }
 }
 
-void run_sequential_reproducible()
+void run_sequential_reproducible(float& result, uint64_t& time)
 {
-    LongAccumulator::InitializeOpenCL();
     chrono::steady_clock::time_point start;
+    LongAccumulatorCPU acc;
     for (int run_idx = 0; run_idx <= repeat_count; ++run_idx) {
         if (run_idx == 0) {
             start = chrono::steady_clock::now();
         }
-
-
         for (int i = 0; i < element_count; ++i) {
             // NOTE: This operation results in non-reproducible results. The reason is that
             //       element order is shuffled after every repetition hence rounding errors
@@ -277,12 +287,11 @@ void run_sequential_reproducible()
             acc += (*elements)[i];
         }
         if (run_idx == 0) {
-            sum_sequential_reproducible = acc();
-            time_sequential_reproducible =
-                chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
+            result = acc();
+            time = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
             cout << "Sequential sum (reproducible): " << fixed << setprecision(10) << sum_sequential_reproducible
                  << " (" << scientific << setprecision(10) << sum_sequential_reproducible << ')' << endl;
-        } else if (acc() != sum_sequential_reproducible) {
+        } else if (acc() != result) {
             cout << "Sequential sum not reproducible after " << run_idx << " runs!" << endl;
             break;
         }
@@ -296,7 +305,6 @@ void run_sequential_reproducible()
             // fixed << setprecision(10) << (float) time_loop / 1000.0 << " [ms])" << endl;
         }
     }
-    LongAccumulator::CleanupOpenCL();
 }
 
 void generate_start_indices()
@@ -338,10 +346,10 @@ void generate_start_indices()
 
 void *kernel_sum(void *data)
 {
-    int id = *((int *) data);
+    kernel_params* params = static_cast<kernel_params*> (data);
     chrono::steady_clock::time_point start;
     for (int repeat_counter = 0; repeat_counter <= repeat_count; ++repeat_counter) {
-        if (id == 0) {
+        if (params->tid == 0) {
             // Generate start indices
             generate_start_indices();
             if (repeat_counter == 0) {
@@ -352,10 +360,10 @@ void *kernel_sum(void *data)
         // Synchronize on barrier to get start index
         pthread_barrier_wait(&barrier);
 
-        partial_sums[id] = 0;
-        int end = id < thread_count - 1 ? start_indices[id + 1] : element_count;
-        for (int i = start_indices[id]; i < end; ++i) {
-            partial_sums[id] += (*elements)[i];
+        partial_sums[params->tid] = 0;
+        int end = params->tid < thread_count - 1 ? start_indices[params->tid + 1] : element_count;
+        for (int i = start_indices[params->tid]; i < end; ++i) {
+            partial_sums[params->tid] += (*elements)[i];
         }
 
         // Wait on barrier to synchronize all threads to start parallel reduction
@@ -371,8 +379,8 @@ void *kernel_sum(void *data)
         if (step_count > 0) {
             // First reduction step is not based on power of two reduction since thread_count may not be a power of
             // two...
-            if (id < thread_count - pow2_count) {
-                partial_sums[(*reduction_map)[id]] += partial_sums[(*reduction_map)[id + pow2_count]];
+            if (params->tid < thread_count - pow2_count) {
+                partial_sums[(*reduction_map)[params->tid]] += partial_sums[(*reduction_map)[params->tid + pow2_count]];
             }
             // Wait on barrier to synchronize all threads for next reduction step
             pthread_barrier_wait(&barrier);
@@ -380,8 +388,8 @@ void *kernel_sum(void *data)
             // reduce...
             for (int i = 1; i < step_count; ++i) {
                 pow2_count >>= 1;
-                if (id < pow2_count) {
-                    partial_sums[(*reduction_map)[id]] += partial_sums[(*reduction_map)[id + pow2_count]];
+                if (params->tid < pow2_count) {
+                    partial_sums[(*reduction_map)[params->tid]] += partial_sums[(*reduction_map)[params->tid + pow2_count]];
                 }
                 // Wait on barrier to synchronize all threads for next reduction step
                 pthread_barrier_wait(&barrier);
@@ -389,15 +397,14 @@ void *kernel_sum(void *data)
         }
 
         // Check results
-        if (id == 0) {
+        if (params->tid == 0) {
             if (repeat_counter == 0) {
-                time_parallel =
-                    chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
-                sum_parallel = partial_sums[(*reduction_map)[id]];
+                params->time = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
+                params->result = partial_sums[(*reduction_map)[params->tid]];
                 result_valid = true;
-                cout << "Parallel sum: " << fixed << setprecision(10) << sum_parallel << " (" << scientific
-                     << setprecision(10) << sum_parallel << ')' << endl;
-            } else if (partial_sums[(*reduction_map)[id]] != sum_parallel) {
+                cout << "Parallel sum: " << fixed << setprecision(10) << params->result << " (" << scientific
+                     << setprecision(10) << params->result << ')' << endl;
+            } else if (partial_sums[(*reduction_map)[params->tid]] != params->result) {
                 cout << "Parallel sum not reproducible after " << repeat_counter << " runs!" << endl;
                 result_valid = false;
             }
@@ -417,7 +424,7 @@ void *kernel_sum(void *data)
     pthread_exit(NULL);
 }
 
-void run_parallel()
+void run_parallel(float& result, uint64_t& time)
 {
     // Get number of available processors
     const int processor_count = thread::hardware_concurrency();
@@ -426,7 +433,7 @@ void run_parallel()
     // Initialize POSIX threads
     pthread_t *threads = new pthread_t[thread_count];
     pthread_attr_t attr;
-    int *thread_ids = new int[thread_count];
+    kernel_params *params = new kernel_params[thread_count];
 
     start_indices = new int[thread_count];
     reduction_map = new vector<int>(thread_count);
@@ -452,12 +459,12 @@ void run_parallel()
     // Create threads with affinity
     cpu_set_t cpus;
     for (int i = 0; i < thread_count; ++i) {
-        thread_ids[i] = i;       // Generate thread ids for easy work sharing
+        params[i].tid = i;       // Generate thread ids for easy work sharing
         (*reduction_map)[i] = i; // Generate initial reduction map for each thread id (same as thread id)
         CPU_ZERO(&cpus);
         CPU_SET(i % processor_count, &cpus);
         pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &cpus);
-        err = pthread_create(&(threads[i]), &attr, kernel_sum, &(thread_ids[i]));
+        err = pthread_create(&(threads[i]), &attr, kernel_sum, &(params[i]));
         if (err) {
             fprintf(stderr, "Error - pthread_create() return code: %d\n", err);
             exit(EXIT_FAILURE);
@@ -485,169 +492,74 @@ void run_parallel()
         fprintf(stderr, "Error - pthread_attr_destroy() return code: %d\n", err);
         exit(EXIT_FAILURE);
     }
+
+    result = params->result;
+    time = params->time;
 
     delete[] partial_sums;
     delete reduction_map;
     delete[] start_indices;
-    delete[] thread_ids;
+    delete[] params;
     delete[] threads;
 }
 
-void *kernel_sum_reproducible(void *data)
+void run_gpu_reproducible(float &result, uint64_t& time)
 {
-    int id = *((int *) data);
     chrono::steady_clock::time_point start;
-    for (int repeat_counter = 0; repeat_counter <= repeat_count; ++repeat_counter) {
-        if (id == 0) {
-            // Generate start indices
-            generate_start_indices();
-            if (repeat_counter == 0) {
-                start = chrono::steady_clock::now();
-            }
+    float sum;
+
+    LongAccumulator::InitializeOpenCL();
+
+    for (int run_idx = 0; run_idx <= repeat_count; ++run_idx) {
+        if (run_idx == 0) {
+            start = chrono::steady_clock::now();
         }
-
-        // Synchronize on barrier to get start index
-        pthread_barrier_wait(&barrier);
-
-        partial_sum_accs[id] = 0;
-        int end = id < thread_count - 1 ? start_indices[id + 1] : element_count;
-        for (int i = start_indices[id]; i < end; ++i) {
-            partial_sum_accs[id] += (*elements)[i];
-        }
-
-        // Wait on barrier to synchronize all threads to start parallel reduction
-        pthread_barrier_wait(&barrier);
-
-        // Reduce partial sums
-        int pow2_count = 1, step_count = 0;
-        while (pow2_count < thread_count) {
-            pow2_count <<= 1;
-            step_count++;
-        }
-        pow2_count >>= 1;
-        if (step_count > 0) {
-            // First reduction step is not based on power of two reduction since thread_count may not be a power of
-            // two...
-            if (id < thread_count - pow2_count) {
-                partial_sum_accs[(*reduction_map)[id]] += partial_sum_accs[(*reduction_map)[id + pow2_count]];
-            }
-            // Wait on barrier to synchronize all threads for next reduction step
-            pthread_barrier_wait(&barrier);
-            // The rest of the steps are simple power of two reduction. There are now pow2_count partial sums to
-            // reduce...
-            for (int i = 1; i < step_count; ++i) {
-                pow2_count >>= 1;
-                if (id < pow2_count) {
-                    partial_sum_accs[(*reduction_map)[id]] += partial_sum_accs[(*reduction_map)[id + pow2_count]];
-                }
-                // Wait on barrier to synchronize all threads for next reduction step
-                pthread_barrier_wait(&barrier);
-            }
-        }
-
-        // Check results
-        if (id == 0) {
-            if (repeat_counter == 0) {
-                time_parallel_reproducible =
-                    chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
-                sum_parallel_reproducible = partial_sum_accs[(*reduction_map)[id]]();
-                result_valid = true;
-                cout << "Parallel sum (reproducible): " << fixed << setprecision(10) << sum_parallel_reproducible
-                     << " (" << scientific << setprecision(10) << sum_parallel_reproducible << ')' << endl;
-            } else if (partial_sum_accs[(*reduction_map)[id]]() != sum_parallel_reproducible) {
-                cout << "Parallel sum (reproducible) not reproducible after " << repeat_counter << " runs!" << endl;
-                result_valid = false;
-            }
-            if (repeat_counter < repeat_count && result_valid) {
-                // Shuffle element vector to incur variability
-                shuffle(elements->begin(), elements->end(), *shuffle_engine);
-                // Shuffle reduction map to incur additional variability
-                shuffle(reduction_map->begin(), reduction_map->end(), *shuffle_engine);
-            }
-        }
-
-        // Wait on barrier to synchronize all threads for next repetition
-        pthread_barrier_wait(&barrier);
-        if (!result_valid)
+        sum = LongAccumulator::Sum(element_count, elements->data());
+        if (run_idx == 0) {
+            result = sum;
+            time = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
+            cout << "GPU reproducible sum: " << fixed << setprecision(10) << result
+                 << " (" << scientific << setprecision(10) << result << ')' << endl;
+        } else if (sum != result) {
+            cout << "GPU reproducible sum not reproducible after " << run_idx << " runs!" << endl;
             break;
+        }
+        if (run_idx < repeat_count) {
+            // Shuffle element vector to incur variability
+            shuffle(elements->begin(), elements->end(), *shuffle_engine);
+            // auto time_loop = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() -
+            // start).count(); cout << "Run " << run_idx << ". passed! Time elapsed: " << time_loop << " [us] (" <<
+            // fixed << setprecision(10) << (float) time_loop / 1000.0 << " [ms])" << endl;
+        }
     }
-    pthread_exit(NULL);
+
+    LongAccumulator::CleanupOpenCL();
 }
 
-void run_parallel_reproducible()
+void print_diff_nrr(const char parallel[], const char type[], const float sum_normal, const float sum_reproducible)
+{    
+    if (sum_normal != sum_reproducible) {
+        cout << "Non-reproducible and reproducible " << parallel << " (" << type << ") sums do not match!" << endl;
+    }
+}
+
+void print_time_speedup(const uint64_t time_seq, const uint64_t time_par)
 {
-    // Get number of available processors
-    const int processor_count = thread::hardware_concurrency();
-    // cout << "Processor count: " << processor_count << endl;
+    cout << endl
+         << "Sequential execution time: " << time_seq << " [us] (" << fixed << setprecision(10)
+         << (float) time_seq / 1000.0 << " [ms])" << endl;
+    cout << "Parallel execution time: " << time_par << " [us] (" << fixed << setprecision(10)
+         << (float) time_par / 1000.0 << " [ms])" << endl;
+    cout << "Speedup: " << fixed << setprecision(10) << ((float) time_seq) / ((float) time_par) << endl
+         << endl;
+}
 
-    // Initialize POSIX threads
-    pthread_t *threads = new pthread_t[thread_count];
-    pthread_attr_t attr;
-    int *thread_ids = new int[thread_count];
-
-    start_indices = new int[thread_count];
-    reduction_map = new vector<int>(thread_count);
-    partial_sum_accs = new LongAccumulator[thread_count];
-
-    int err;
-
-    // Create thread attribute object (in case this code is used with compilers other than G++)
-    err = pthread_attr_init(&attr);
-    if (err) {
-        fprintf(stderr, "Error - pthread_attr_init() return code: %d\n", err);
-        exit(EXIT_FAILURE);
-    }
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
-
-    // Create thread barrier
-    err = pthread_barrier_init(&barrier, NULL, thread_count);
-    if (err) {
-        fprintf(stderr, "Error - pthread_barrier_init() return code: %d\n", err);
-        exit(EXIT_FAILURE);
-    }
-
-    // Create threads with affinity
-    cpu_set_t cpus;
-    for (int i = 0; i < thread_count; ++i) {
-        thread_ids[i] = i;       // Generate thread ids for easy work sharing
-        (*reduction_map)[i] = i; // Generate initial reduction map for each thread id (same as thread id)
-        CPU_ZERO(&cpus);
-        CPU_SET(i % processor_count, &cpus);
-        pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &cpus);
-        err = pthread_create(&(threads[i]), &attr, kernel_sum_reproducible, &(thread_ids[i]));
-        if (err) {
-            fprintf(stderr, "Error - pthread_create() return code: %d\n", err);
-            exit(EXIT_FAILURE);
-        }
-    }
-
-    // Wait for other threads to complete
-    for (int i = 0; i < thread_count; ++i) {
-        err = pthread_join(threads[i], NULL);
-        if (err) {
-            fprintf(stderr, "Error - pthread_join() return code: %d\n", err);
-            exit(EXIT_FAILURE);
-        }
-    }
-
-    // Cleanup
-    err = pthread_barrier_destroy(&barrier);
-    if (err) {
-        fprintf(stderr, "Error - pthread_barrier_destroy() return code: %d\n", err);
-        exit(EXIT_FAILURE);
-    }
-
-    err = pthread_attr_destroy(&attr);
-    if (err) {
-        fprintf(stderr, "Error - pthread_attr_destroy() return code: %d\n", err);
-        exit(EXIT_FAILURE);
-    }
-
-    delete[] partial_sum_accs;
-    delete reduction_map;
-    delete[] start_indices;
-    delete[] thread_ids;
-    delete[] threads;
+void print_time_speedup_exblas(const char type[], const uint64_t time_par, const uint64_t time_par_rep)
+{
+    cout << "ExBLAS execution time - " << type << ": " << time_par_rep << " [us] (" << fixed << setprecision(10)
+         << (float) time_par_rep / 1000.0 << " [ms])" << endl;
+    cout << "Speedup ExBLAS reproducible - " << type << " / parallel non-reproducible: " << fixed << setprecision(10)
+         << ((float) time_par) / ((float) time_par_rep) << endl;
 }
 
 void cleanup()
@@ -665,21 +577,32 @@ int main(int argc, char *argv[])
 
     shuffle_engine = new default_random_engine(seed);
 
-    run_sequential();
-    run_sequential_reproducible();
-    run_parallel();
-    run_parallel_reproducible();
+    run_sequential(sum_sequential, time_sequential);
+    run_parallel(sum_parallel, time_parallel);
+
+    cout << endl;
+
+    run_sequential_reproducible(sum_sequential_reproducible, time_sequential_reproducible);
+    run_gpu_reproducible(sum_gpu_reproducible, time_gpu_reproducible);
 
     if (sum_sequential != sum_sequential_reproducible) {
-        cout << "Non-reproducible and reproducible sequential sums do not match!" << endl;
+        cout << "Non-reproducible sequential and reproducible sequential sums do not match!" << endl;
     }
 
-    if (sum_parallel != sum_parallel_reproducible) {
-        cout << "Non-reproducible and reproducible parallel sums do not match!" << endl;
+    if (sum_parallel != sum_sequential_reproducible) {
+        cout << "Non-reproducible parallel and reproducible sequential sums do not match!" << endl;
     }
 
-    cout << "Reproducible sequential and parallel sums "
-         << (sum_sequential_reproducible != sum_parallel_reproducible ? "do not " : "") << "match!" << endl;
+    if (sum_sequential != sum_gpu_reproducible) {
+        cout << "Non-reproducible sequential and gpu reproducible sums do not match!" << endl;
+    }
+
+    if (sum_parallel != sum_gpu_reproducible) {
+        cout << "Non-reproducible parallel and gpu reproducible sums do not match!" << endl;
+    }
+
+    cout << "Reproducible sequential and gpu reproducible sums "
+         << (sum_sequential_reproducible != sum_gpu_reproducible ? "do not " : "") << "match!" << endl;
 
     cout << endl
          << "Sequential execution time: " << time_sequential << " [us] (" << fixed << setprecision(10)
@@ -689,18 +612,18 @@ int main(int argc, char *argv[])
     cout << "Speedup: " << fixed << setprecision(10) << ((float) time_sequential) / ((float) time_parallel) << endl
          << endl;
 
-    cout << "Sequential execution time (reproducible): " << time_sequential_reproducible << " [us] (" << fixed
+    cout << "Reproducible sequential execution time: " << time_sequential_reproducible << " [us] (" << fixed
          << setprecision(10) << (float) time_sequential_reproducible / 1000.0 << " [ms])" << endl;
-    cout << "Parallel execution time (reproducible): " << time_parallel_reproducible << " [us] (" << fixed
-         << setprecision(10) << (float) time_parallel_reproducible / 1000.0 << " [ms])" << endl;
+    cout << "Gpu reproducible execution time: " << time_gpu_reproducible << " [us] (" << fixed
+         << setprecision(10) << (float) time_gpu_reproducible / 1000.0 << " [ms])" << endl;
     cout << "Speedup (reproducible): " << fixed << setprecision(10)
-         << ((float) time_sequential_reproducible) / ((float) time_parallel_reproducible) << endl
+         << ((float) time_sequential_reproducible) / ((float) time_gpu_reproducible) << endl
          << endl;
 
     cout << "Time sequential reproducible / non-reproducible: " << fixed << setprecision(10)
          << ((float) time_sequential_reproducible) / ((float) time_sequential) << endl;
     cout << "Time parallel reproducible / non-reproducible: " << fixed << setprecision(10)
-         << ((float) time_parallel_reproducible) / ((float) time_parallel) << endl;
+         << ((float) time_gpu_reproducible) / ((float) time_parallel) << endl;
 
     cleanup();
 

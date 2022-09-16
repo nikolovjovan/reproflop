@@ -30,13 +30,13 @@ cl_platform_id GetOCLPlatform(
             return NULL;
         }
 
-        /*// */cout << "### Platform[" << ui << "] : " << pPlatformName << "\n";
+        // cout << "### Platform[" << ui << "] : " << pPlatformName << "\n";
 
         if (!strcmp(pPlatformName, name))
             ui_res = ui; //return pPlatforms[ui];
     }
 
-    /*// */cout << "### Using Platform : " << name << "\n";
+    // cout << "### Using Platform : " << name << "\n";
 
     if (ui_res > -1)
         return pPlatforms[ui_res];
@@ -65,13 +65,13 @@ cl_device_id GetOCLDevice(
             return NULL;
         }
 
-        cout << "### Device[" << ui << "] : " << dDeviceName << "\n";
+        // cout << "### Device[" << ui << "] : " << dDeviceName << "\n";
         if (ui == 0) {
             strcpy(name, dDeviceName);
         }
     }
 
-    cout << "### Using Device : " << name << "\n";
+    // cout << "### Using Device : " << name << "\n";
 
     return dDevices[0];
 }

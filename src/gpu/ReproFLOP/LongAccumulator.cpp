@@ -1,5 +1,5 @@
 #include "LongAccumulator.h"
-#include "LongAccumulatorCPU.h"
+// #include "LongAccumulatorCPU.h"
 
 #include <limits>
 
@@ -322,36 +322,36 @@ float LongAccumulator::Sum(const int N, float *arr, int *err)
         }
     }
 
-    // Allocate internal buffers
-    //
-    uint32_t size = ACCUMULATOR_COUNT * ACCUMULATOR_SIZE * sizeof(cl_uint);
-    uint32_t *accumulators = (uint32_t*) malloc(size * sizeof(uint32_t));
+    // // Allocate internal buffers
+    // //
+    // uint32_t size = ACCUMULATOR_COUNT * ACCUMULATOR_SIZE * sizeof(cl_uint);
+    // uint32_t *accumulators = (uint32_t*) malloc(size * sizeof(uint32_t));
 
-    // Retrieve internal buffers.
-    //
-    ciErrNum = clEnqueueReadBuffer(s_commandQueue, s_accumulators, CL_TRUE, 0, size, accumulators, 0, NULL, NULL);
-    if (ciErrNum != CL_SUCCESS) {
-        printf("ciErrNum = %d\n", ciErrNum);
-        printf("Error in clEnqueueReadBuffer Line %u in file %s !!!\n\n", __LINE__, __FILE__);
-        exit(EXIT_FAILURE);
-    }
+    // // Retrieve internal buffers.
+    // //
+    // ciErrNum = clEnqueueReadBuffer(s_commandQueue, s_accumulators, CL_TRUE, 0, size, accumulators, 0, NULL, NULL);
+    // if (ciErrNum != CL_SUCCESS) {
+    //     printf("ciErrNum = %d\n", ciErrNum);
+    //     printf("Error in clEnqueueReadBuffer Line %u in file %s !!!\n\n", __LINE__, __FILE__);
+    //     exit(EXIT_FAILURE);
+    // }
 
-    for (int i = 0; i < ACCUMULATOR_COUNT; ++i) {
-        bool allzero = true;
-        for (int j = 0; j < ACCUMULATOR_SIZE && allzero; ++j) {
-            if (accumulators[i * ACCUMULATOR_SIZE + j]) {
-                allzero = false;
-            }
-        }
-        if (!allzero) {
-            printf("%05u: ", i);
-            for (int j = 0; j < ACCUMULATOR_SIZE; ++j) {
-                printf("%u%c", accumulators[i * ACCUMULATOR_SIZE + j], j < ACCUMULATOR_SIZE - 1 ? ' ' : '\n');
-            }
-            LongAccumulatorCPU cpuLacc (&accumulators[i * ACCUMULATOR_SIZE]);
-            printf("CPU Lacc conversion: %f\n", cpuLacc ());
-        }
-    }
+    // for (int i = 0; i < ACCUMULATOR_COUNT; ++i) {
+    //     bool allzero = true;
+    //     for (int j = 0; j < ACCUMULATOR_SIZE && allzero; ++j) {
+    //         if (accumulators[i * ACCUMULATOR_SIZE + j]) {
+    //             allzero = false;
+    //         }
+    //     }
+    //     if (!allzero) {
+    //         printf("%05u: ", i);
+    //         for (int j = 0; j < ACCUMULATOR_SIZE; ++j) {
+    //             printf("%u%c", accumulators[i * ACCUMULATOR_SIZE + j], j < ACCUMULATOR_SIZE - 1 ? ' ' : '\n');
+    //         }
+    //         LongAccumulatorCPU cpuLacc (&accumulators[i * ACCUMULATOR_SIZE]);
+    //         printf("CPU Lacc conversion: %f\n", cpuLacc ());
+    //     }
+    // }
 
     {
         local_work_size = MERGE_WORKGROUP_SIZE;
@@ -397,35 +397,35 @@ float LongAccumulator::Sum(const int N, float *arr, int *err)
         exit(EXIT_FAILURE);
     }
 
-    // Retrieve internal buffers.
-    //
-    ciErrNum = clEnqueueReadBuffer(s_commandQueue, s_accumulators, CL_TRUE, 0, size, accumulators, 0, NULL, NULL);
-    if (ciErrNum != CL_SUCCESS) {
-        printf("ciErrNum = %d\n", ciErrNum);
-        printf("Error in clEnqueueReadBuffer Line %u in file %s !!!\n\n", __LINE__, __FILE__);
-        exit(EXIT_FAILURE);
-    }
+    // // Retrieve internal buffers.
+    // //
+    // ciErrNum = clEnqueueReadBuffer(s_commandQueue, s_accumulators, CL_TRUE, 0, size, accumulators, 0, NULL, NULL);
+    // if (ciErrNum != CL_SUCCESS) {
+    //     printf("ciErrNum = %d\n", ciErrNum);
+    //     printf("Error in clEnqueueReadBuffer Line %u in file %s !!!\n\n", __LINE__, __FILE__);
+    //     exit(EXIT_FAILURE);
+    // }
 
-    printf("After merge:\n");
+    // printf("After merge:\n");
 
-    for (int i = 0; i < ACCUMULATOR_COUNT; ++i) {
-        bool allzero = true;
-        for (int j = 0; j < ACCUMULATOR_SIZE && allzero; ++j) {
-            if (accumulators[i * ACCUMULATOR_SIZE + j]) {
-                allzero = false;
-            }
-        }
-        if (!allzero) {
-            printf("%.5u: ", i);
-            for (int j = 0; j < ACCUMULATOR_SIZE; ++j) {
-                printf("%u%c", accumulators[i * ACCUMULATOR_SIZE + j], j < ACCUMULATOR_SIZE - 1 ? ' ' : '\n');
-            }
-            LongAccumulatorCPU cpuLacc (&accumulators[i * ACCUMULATOR_SIZE]);
-            printf("CPU Lacc conversion: %f\n", cpuLacc ());
-        }
-    }
+    // for (int i = 0; i < ACCUMULATOR_COUNT; ++i) {
+    //     bool allzero = true;
+    //     for (int j = 0; j < ACCUMULATOR_SIZE && allzero; ++j) {
+    //         if (accumulators[i * ACCUMULATOR_SIZE + j]) {
+    //             allzero = false;
+    //         }
+    //     }
+    //     if (!allzero) {
+    //         printf("%.5u: ", i);
+    //         for (int j = 0; j < ACCUMULATOR_SIZE; ++j) {
+    //             printf("%u%c", accumulators[i * ACCUMULATOR_SIZE + j], j < ACCUMULATOR_SIZE - 1 ? ' ' : '\n');
+    //         }
+    //         LongAccumulatorCPU cpuLacc (&accumulators[i * ACCUMULATOR_SIZE]);
+    //         printf("CPU Lacc conversion: %f\n", cpuLacc ());
+    //     }
+    // }
 
-    free(accumulators);
+    // free(accumulators);
 
     // Release memory...
     //
