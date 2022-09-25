@@ -9,6 +9,7 @@ using namespace std;
 #define OPENCL_PROGRAM_FILENAME "LongAccumulator.cl"
 #define ACCUMULATE_KERNEL_NAME  "LongAccumulatorAccumulate"
 #define MERGE_KERNEL_NAME       "LongAccumulatorMerge"
+#define ROUND_KERNEL_NAME       "LongAccumulatorRound"
 
 #ifdef AMD
 constexpr char compileOptionsFormat[256] = "-DACCUMULATOR_SIZE=%u -DACCUMULATOR_COUNT=%u -DWARP_SIZE=%u -DACCUMULATE_WARP_COUNT=%u -DMERGE_WARP_COUNT=%u -DMERGE_ACCUMULATOR_COUNT=%u -DUSE_KNUTH";
@@ -27,6 +28,7 @@ cl_command_queue LongAccumulator::s_commandQueue = nullptr;
 cl_program LongAccumulator::s_program = nullptr;
 cl_kernel LongAccumulator::s_clkAccumulate = nullptr;
 cl_kernel LongAccumulator::s_clkMerge = nullptr;
+cl_kernel LongAccumulator::s_clkRound = nullptr;
 
 cl_mem LongAccumulator::s_data_arr = nullptr;
 cl_mem LongAccumulator::s_data_res = nullptr;
@@ -186,14 +188,20 @@ cl_int LongAccumulator::InitializeAcc(
     s_clkAccumulate = clCreateKernel(s_program, ACCUMULATE_KERNEL_NAME, &ciErrNum);
     if (ciErrNum != CL_SUCCESS) {
         cerr << "Error = " << ciErrNum << "\n";
-        cerr << "Error in clCreateKernel: LongAccumulator, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        cerr << "Error in clCreateKernel: " ACCUMULATE_KERNEL_NAME ", Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
         return -5;
     }
     s_clkMerge = clCreateKernel(s_program, MERGE_KERNEL_NAME, &ciErrNum);
     if (ciErrNum != CL_SUCCESS) {
         cerr << "Error = " << ciErrNum << "\n";
-        cerr << "Error in clCreateKernel: LongAccumulatorComplete, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        cerr << "Error in clCreateKernel: " MERGE_KERNEL_NAME ", Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
         return -6;
+    }
+    s_clkRound = clCreateKernel(s_program, ROUND_KERNEL_NAME, &ciErrNum);
+    if (ciErrNum != CL_SUCCESS) {
+        cerr << "Error = " << ciErrNum << "\n";
+        cerr << "Error in clCreateKernel: " ROUND_KERNEL_NAME ", Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        return -7;
     }
 
     // Allocate internal buffers
@@ -202,7 +210,7 @@ cl_int LongAccumulator::InitializeAcc(
     s_accumulators = clCreateBuffer(s_context, CL_MEM_READ_WRITE, size, NULL, &ciErrNum);
     if (ciErrNum != CL_SUCCESS) {
         printf("Error in clCreateBuffer for s_accumulators, Line %u in file %s !!!\n\n", __LINE__, __FILE__);
-        return EXIT_FAILURE;
+        return -8;
     }
 
     // Deallocate temp storage
@@ -236,7 +244,7 @@ cl_int LongAccumulator::CleanupAcc()
         ciErrNum = clReleaseKernel(s_clkAccumulate);
         if (ciErrNum != CL_SUCCESS) {
             cerr << "Error = " << ciErrNum << "\n";
-            cerr << "Error in clReleaseKernel: LongAccumulator, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+            cerr << "Error in clReleaseKernel: " ACCUMULATE_KERNEL_NAME ", Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
             res |= 1 << 1;
         }
     }
@@ -245,8 +253,17 @@ cl_int LongAccumulator::CleanupAcc()
         ciErrNum = clReleaseKernel(s_clkMerge);
         if (ciErrNum != CL_SUCCESS) {
             cerr << "Error = " << ciErrNum << "\n";
-            cerr << "Error in clReleaseKernel: LongAccumulatorComplete, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+            cerr << "Error in clReleaseKernel: " MERGE_KERNEL_NAME ", Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
             res |= 1 << 2;
+        }
+    }
+
+    if (s_clkRound) {
+        ciErrNum = clReleaseKernel(s_clkRound);
+        if (ciErrNum != CL_SUCCESS) {
+            cerr << "Error = " << ciErrNum << "\n";
+            cerr << "Error in clReleaseKernel: " ROUND_KERNEL_NAME ", Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+            res |= 1 << 4;
         }
     }
 
@@ -255,7 +272,7 @@ cl_int LongAccumulator::CleanupAcc()
         if (ciErrNum != CL_SUCCESS) {
             cerr << "Error = " << ciErrNum << "\n";
             cerr << "Error in clReleaseProgram, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
-            res |= 1 << 4;
+            res |= 1 << 8;
         }
     }
 
@@ -337,21 +354,32 @@ float LongAccumulator::Sum(const int N, float *arr, int *err)
     //     exit(EXIT_FAILURE);
     // }
 
-    // for (int i = 0; i < ACCUMULATOR_COUNT; ++i) {
-    //     bool allzero = true;
-    //     for (int j = ACCUMULATOR_SIZE - 1; j >= 0 && allzero; --j) {
-    //         if (accumulators[i * ACCUMULATOR_SIZE + j]) {
-    //             allzero = false;
+    // cout << "\naccumulators (before global merge):\n\n";
+
+    // bool allzero = false;
+    // for (int step = 0; step < 2; ++step) {
+    //     for (int i = 0; i < ACCUMULATOR_COUNT; ++i) {
+    //         allzero = true;
+    //         for (int j = ACCUMULATOR_SIZE - 1; j >= 0 && allzero; --j) {
+    //             if (accumulators[i * ACCUMULATOR_SIZE + j]) {
+    //                 allzero = false;
+    //             }
+    //         }
+    //         if (!allzero) {
+    //             printf("[%05u]: ", i);
+    //             if (step == 0) {
+    //                 LongAccumulatorCPU cpuLacc (&accumulators[i * ACCUMULATOR_SIZE]);
+    //                 cout << cpuLacc() << '\n';
+    //             } else if (step == 1) {
+    //                 for (int j = ACCUMULATOR_SIZE - 1; j >= 0; --j) {
+    //                     printf("%u%c", accumulators[i * ACCUMULATOR_SIZE + j], j > 0 ? '\t' : '\n');
+    //                 }
+    //             }
     //         }
     //     }
-    //     if (!allzero) {
-    //         printf("%05u: ", i);
-    //         for (int j = ACCUMULATOR_SIZE - 1; j >= 0; --j) {
-    //             printf("%u%c", accumulators[i * ACCUMULATOR_SIZE + j], j > 0 ? ' ' : '\n');
-    //         }
-    //         LongAccumulatorCPU cpuLacc (&accumulators[i * ACCUMULATOR_SIZE]);
-    //         printf("CPU Lacc conversion: %f\n", cpuLacc ());
-    //         cout << cpuLacc << "\n\n";
+
+    //     if (step == 0) {
+    //         cout << "\n(LongAccumulator) accumulators:\n";
     //     }
     // }
 
@@ -360,8 +388,7 @@ float LongAccumulator::Sum(const int N, float *arr, int *err)
         global_work_size = local_work_size * (ACCUMULATOR_COUNT / MERGE_ACCUMULATOR_COUNT);
 
         cl_uint i = 0;
-        ciErrNum  = clSetKernelArg(s_clkMerge, i++, sizeof(cl_mem),  (void *)&s_accumulators);
-        ciErrNum |= clSetKernelArg(s_clkMerge, i++, sizeof(cl_mem),  (void *)&s_data_res);
+        ciErrNum = clSetKernelArg(s_clkMerge, i++, sizeof(cl_mem),  (void *)&s_accumulators);
         if (ciErrNum != CL_SUCCESS) {
             printf("Error in clSetKernelArg, Line %u in file %s !!!\n\n", __LINE__, __FILE__);
             if (err != nullptr) {
@@ -373,6 +400,79 @@ float LongAccumulator::Sum(const int N, float *arr, int *err)
         ciErrNum = clEnqueueNDRangeKernel(
             s_commandQueue,
             s_clkMerge,
+            /* work_dim */ 1,
+            /* global_work_offset */ NULL,
+            &global_work_size,
+            &local_work_size,
+            /* num_events_in_wait_list */ 0,
+            /* event_wait_list* */ NULL,
+            /* event */ NULL);
+        if (ciErrNum != CL_SUCCESS) {
+            printf("ciErrNum = %d\n", ciErrNum);
+            printf("Error in clEnqueueNDRangeKernel, Line %u in file %s !!!\n\n", __LINE__, __FILE__);
+            if (err != nullptr) {
+                *err = ciErrNum;
+            }
+            return numeric_limits<float>::signaling_NaN();
+        }
+    }
+
+    // // Retrieve internal buffers.
+    // //
+    // ciErrNum = clEnqueueReadBuffer(s_commandQueue, s_accumulators, CL_TRUE, 0, size, accumulators, 0, NULL, NULL);
+    // if (ciErrNum != CL_SUCCESS) {
+    //     printf("ciErrNum = %d\n", ciErrNum);
+    //     printf("Error in clEnqueueReadBuffer Line %u in file %s !!!\n\n", __LINE__, __FILE__);
+    //     exit(EXIT_FAILURE);
+    // }
+
+    // cout << "\naccumulators (after global merge part 1):\n\n";
+
+    // allzero = false;
+    // for (int step = 0; step < 2; ++step) {
+    //     for (int i = 0; i < ACCUMULATOR_COUNT; ++i) {
+    //         allzero = true;
+    //         for (int j = ACCUMULATOR_SIZE - 1; j >= 0 && allzero; --j) {
+    //             if (accumulators[i * ACCUMULATOR_SIZE + j]) {
+    //                 allzero = false;
+    //             }
+    //         }
+    //         if (!allzero) {
+    //             printf("[%05u]: ", i);
+    //             if (step == 0) {
+    //                 LongAccumulatorCPU cpuLacc (&accumulators[i * ACCUMULATOR_SIZE]);
+    //                 cout << cpuLacc() << '\n';
+    //             } else if (step == 1) {
+    //                 for (int j = ACCUMULATOR_SIZE - 1; j >= 0; --j) {
+    //                     printf("%u%c", accumulators[i * ACCUMULATOR_SIZE + j], j > 0 ? '\t' : '\n');
+    //                 }
+    //             }
+    //         }
+    //     }
+
+    //     if (step == 0) {
+    //         cout << "\n(LongAccumulator) accumulators:\n";
+    //     }
+    // }
+
+    {
+        local_work_size = MERGE_WORKGROUP_SIZE;
+        global_work_size = local_work_size; // only a single workgroup is needed
+
+        cl_uint i = 0;
+        ciErrNum  = clSetKernelArg(s_clkRound, i++, sizeof(cl_mem),  (void *)&s_accumulators);
+        ciErrNum |= clSetKernelArg(s_clkRound, i++, sizeof(cl_mem),  (void *)&s_data_res);
+        if (ciErrNum != CL_SUCCESS) {
+            printf("Error in clSetKernelArg, Line %u in file %s !!!\n\n", __LINE__, __FILE__);
+            if (err != nullptr) {
+                *err = ciErrNum;
+            }
+            return numeric_limits<float>::signaling_NaN();
+        }
+
+        ciErrNum = clEnqueueNDRangeKernel(
+            s_commandQueue,
+            s_clkRound,
             /* work_dim */ 1,
             /* global_work_offset */ NULL,
             &global_work_size,
@@ -408,23 +508,32 @@ float LongAccumulator::Sum(const int N, float *arr, int *err)
     //     exit(EXIT_FAILURE);
     // }
 
-    // printf("After merge:\n\n");
+    // cout << "\naccumulators (after global merge part 2):\n\n";
 
-    // for (int i = 0; i < ACCUMULATOR_COUNT; ++i) {
-    //     bool allzero = true;
-    //     for (int j = ACCUMULATOR_SIZE - 1; j >= 0 && allzero; --j) {
-    //         if (accumulators[i * ACCUMULATOR_SIZE + j]) {
-    //             allzero = false;
+    // allzero = false;
+    // for (int step = 0; step < 2; ++step) {
+    //     for (int i = 0; i < ACCUMULATOR_COUNT; ++i) {
+    //         allzero = true;
+    //         for (int j = ACCUMULATOR_SIZE - 1; j >= 0 && allzero; --j) {
+    //             if (accumulators[i * ACCUMULATOR_SIZE + j]) {
+    //                 allzero = false;
+    //             }
+    //         }
+    //         if (!allzero) {
+    //             printf("[%05u]: ", i);
+    //             if (step == 0) {
+    //                 LongAccumulatorCPU cpuLacc (&accumulators[i * ACCUMULATOR_SIZE]);
+    //                 cout << cpuLacc() << '\n';
+    //             } else if (step == 1) {
+    //                 for (int j = ACCUMULATOR_SIZE - 1; j >= 0; --j) {
+    //                     printf("%u%c", accumulators[i * ACCUMULATOR_SIZE + j], j > 0 ? '\t' : '\n');
+    //                 }
+    //             }
     //         }
     //     }
-    //     if (!allzero) {
-    //         printf("%.5u: ", i);
-    //         for (int j = ACCUMULATOR_SIZE - 1; j >= 0; --j) {
-    //             printf("%u%c", accumulators[i * ACCUMULATOR_SIZE + j], j > 0 ? ' ' : '\n');
-    //         }
-    //         LongAccumulatorCPU cpuLacc (&accumulators[i * ACCUMULATOR_SIZE]);
-    //         printf("CPU Lacc conversion: %f\n", cpuLacc ());
-    //         cout << cpuLacc << "\n\n";
+
+    //     if (step == 0) {
+    //         cout << "\n(LongAccumulator) accumulators:\n";
     //     }
     // }
 

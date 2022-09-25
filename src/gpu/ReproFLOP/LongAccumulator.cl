@@ -3,6 +3,7 @@
 // #define LOCAL_ACCUMULATION_TESTING
 // #define LOCAL_MERGE_TESTING
 // #define GLOBAL_MERGE_TESTING
+// #define FINAL_MERGE_TESTING
 
 #define WORKGROUP_SIZE          (ACCUMULATE_WARP_COUNT * WARP_SIZE)
 #define MERGE_WORKGROUP_SIZE    (MERGE_WARP_COUNT * WARP_SIZE)
@@ -234,7 +235,11 @@ void LongAccumulatorAccumulate (
     //
     if (get_local_id(0) < ACCUMULATOR_SIZE) {
         accumulators[get_group_id(0) * ACCUMULATOR_SIZE + get_local_id(0)] = 0;
-        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+
+    barrier(CLK_GLOBAL_MEM_FENCE);
+
+    if (get_local_id(0) < ACCUMULATOR_SIZE) {
         for (uint i = 0; i < ACCUMULATE_WARP_COUNT; ++i)
             AddGlobal((accumulators + get_group_id(0) * ACCUMULATOR_SIZE), get_local_id(0), lacc[get_local_id(0) * ACCUMULATE_WARP_COUNT + i], false);
     }
@@ -244,8 +249,7 @@ void LongAccumulatorAccumulate (
 
 __kernel __attribute__((reqd_work_group_size(MERGE_WORKGROUP_SIZE, 1, 1)))
 void LongAccumulatorMerge (
-    __global uint *accumulators,
-    __global float *result)
+    __global uint *accumulators)
 {
 #if !defined(LOCAL_ACCUMULATION_TESTING) && !defined(LOCAL_MERGE_TESTING)
     if (get_local_id(0) < ACCUMULATOR_SIZE)
@@ -255,24 +259,38 @@ void LongAccumulatorMerge (
         for (uint i = 1; i < MERGE_ACCUMULATOR_COUNT; ++i) {
             AddGlobal((accumulators + get_group_id(0) * MERGE_ACCUMULATOR_COUNT * ACCUMULATOR_SIZE), get_local_id(0), accumulators[(get_group_id(0) * MERGE_ACCUMULATOR_COUNT + i) * ACCUMULATOR_SIZE + get_local_id(0)], false);
 
-#ifdef GLOBAL_MERGE_TESTING
+#if defined(GLOBAL_MERGE_TESTING) || defined(FINAL_MERGE_TESTING)
             accumulators[(get_group_id(0) * MERGE_ACCUMULATOR_COUNT + i) * ACCUMULATOR_SIZE + get_local_id(0)] = 0;
 #endif
         }
     }
+#endif
+}
 
-    barrier(CLK_LOCAL_MEM_FENCE);
+__kernel __attribute__((reqd_work_group_size(MERGE_WORKGROUP_SIZE, 1, 1)))
+void LongAccumulatorRound (
+    __global uint *accumulators,
+    __global float *result)
+{
+    // Only one workgroup is required for this operation.
+    //
+    // if (get_group_id(0) != 0) {
+    //     return;
+    // }
 
-    if ((get_local_id(0) < ACCUMULATOR_SIZE) && (get_group_id(0) == 0))
+#if !defined(LOCAL_ACCUMULATION_TESTING) && !defined(LOCAL_MERGE_TESTING)
+    if (get_local_id(0) < ACCUMULATOR_SIZE)
     {
 #ifndef GLOBAL_MERGE_TESTING
         // Merge group-level long accumulators into a final long accumulator.
         //
-        for (uint i = 1; i < ACCUMULATOR_COUNT / MERGE_ACCUMULATOR_COUNT; ++i) {
-            AddGlobal(accumulators, get_local_id(0), accumulators[i * MERGE_ACCUMULATOR_COUNT * ACCUMULATOR_SIZE + get_local_id(0)], false);
-        }
+        for (uint i = MERGE_ACCUMULATOR_COUNT; i < ACCUMULATOR_COUNT; i += MERGE_ACCUMULATOR_COUNT) {
+            AddGlobal(accumulators, get_local_id(0), accumulators[i * ACCUMULATOR_SIZE + get_local_id(0)], false);
 
-        barrier(CLK_LOCAL_MEM_FENCE);
+#ifdef FINAL_MERGE_TESTING
+            accumulators[i * ACCUMULATOR_SIZE + get_local_id(0)] = 0;
+#endif
+        }
 #endif
 
         if (get_local_id(0) == 0)

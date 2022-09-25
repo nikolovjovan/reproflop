@@ -611,10 +611,12 @@ float SimulateLongAccumulator(uint N, float *arr)
         LongAccumulatorAccumulateMerge(N, arr, accumulators);
     }
 
+    bool allzero = false;
+
     if (N < 1000000) {
         cout << "\naccumulators (before global merge):\n\n";
 
-        bool allzero = false;
+        allzero = false;
         for (int step = 0; step < 2; ++step) {
             for (int i = 0; i < ACCUMULATOR_COUNT; ++i) {
                 allzero = true;
@@ -689,10 +691,10 @@ float SimulateLongAccumulator(uint N, float *arr)
         }
     }
 
-    // if (N < 1000000) {
+    if (N < 1000000) {
         cout << "\naccumulators (after global merge part 2):\n\n";
 
-        bool allzero = false;
+        allzero = false;
         for (int step = 0; step < 2; ++step) {
             for (int i = 0; i < ACCUMULATOR_COUNT; ++i) {
                 allzero = true;
@@ -718,7 +720,7 @@ float SimulateLongAccumulator(uint N, float *arr)
                 cout << "\n(LongAccumulator) accumulators:\n";
             }
         }
-    // }
+    }
 
     float sum = 0;
 

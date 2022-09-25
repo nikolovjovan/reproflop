@@ -50,7 +50,7 @@ constexpr uint32_t MERGE_WORKGROUP_SIZE = WARP_SIZE * MERGE_WARP_COUNT;
 
 // Number of accumulators that will get merged in the first step.
 //
-constexpr uint32_t MERGE_ACCUMULATOR_COUNT = ACCUMULATE_WARP_COUNT; //64;
+constexpr uint32_t MERGE_ACCUMULATOR_COUNT = ACCUMULATE_WARP_COUNT;
 
 class LongAccumulator
 {
@@ -78,6 +78,7 @@ private:
     static cl_program s_program;
     static cl_kernel s_clkAccumulate;
     static cl_kernel s_clkMerge;
+    static cl_kernel s_clkRound;
 
     static cl_mem s_data_arr;
     static cl_mem s_data_res;
