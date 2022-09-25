@@ -522,6 +522,8 @@ void run_gpu_reproducible(float &result, uint64_t& time)
                  << " (" << scientific << setprecision(10) << result << ')' << endl;
         } else if (sum != result) {
             cout << "GPU reproducible sum not reproducible after " << run_idx << " runs!" << endl;
+            cout << "New (wrong) sum: " << fixed << setprecision(10) << sum
+                 << " (" << scientific << setprecision(10) << sum << ')' << endl;
             break;
         }
         if (run_idx < repeat_count) {

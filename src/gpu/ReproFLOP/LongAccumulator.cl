@@ -57,7 +57,7 @@ void AddLocal(
         // Check for underflow/overflow.
         //
         if (negative ?
-                /* underflow */ old + val > old :
+                /* underflow */ old - val > old :
                 /* overflow */  old + val < old) {
             ++idx;
             val = 1;
@@ -87,8 +87,9 @@ void AddGlobal(
 
         // Check for underflow/overflow.
         //
-        if ((/* overflow */ !negative && old + val < old) ||
-            (/* underflow */ negative && old + val > old)) {
+        if (negative ?
+                /* underflow */ old - val > old :
+                /* overflow */  old + val < old) {
             ++idx;
             val = 1;
         } else break;
@@ -267,7 +268,7 @@ void LongAccumulatorMerge (
 #ifndef GLOBAL_MERGE_TESTING
         // Merge group-level long accumulators into a final long accumulator.
         //
-        for (uint i = 1; i < get_global_size(0) / get_local_size(0); ++i) {
+        for (uint i = 1; i < ACCUMULATOR_COUNT / MERGE_ACCUMULATOR_COUNT; ++i) {
             AddGlobal(accumulators, get_local_id(0), accumulators[i * MERGE_ACCUMULATOR_COUNT * ACCUMULATOR_SIZE + get_local_id(0)], false);
         }
 

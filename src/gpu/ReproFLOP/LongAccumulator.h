@@ -50,7 +50,7 @@ constexpr uint32_t MERGE_WORKGROUP_SIZE = WARP_SIZE * MERGE_WARP_COUNT;
 
 // Number of accumulators that will get merged in the first step.
 //
-constexpr uint32_t MERGE_ACCUMULATOR_COUNT = 64;
+constexpr uint32_t MERGE_ACCUMULATOR_COUNT = ACCUMULATE_WARP_COUNT; //64;
 
 class LongAccumulator
 {

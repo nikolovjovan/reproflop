@@ -23,6 +23,11 @@ public:
     LongAccumulatorCPU(float f);
     LongAccumulatorCPU(uint32_t *gpuAcc);
 
+    std::array<uint32_t, ACC_SIZE>& getAcc()
+    {
+        return acc;
+    }
+
     LongAccumulatorCPU &operator+=(const LongAccumulatorCPU &other);
     LongAccumulatorCPU &operator-=(const LongAccumulatorCPU &other);
 

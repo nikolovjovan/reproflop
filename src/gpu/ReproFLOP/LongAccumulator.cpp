@@ -1,6 +1,7 @@
 #include "LongAccumulator.h"
 // #include "LongAccumulatorCPU.h"
 
+// #include <iostream>
 #include <limits>
 
 using namespace std;
@@ -10,9 +11,9 @@ using namespace std;
 #define MERGE_KERNEL_NAME       "LongAccumulatorMerge"
 
 #ifdef AMD
-constexpr char compileOptionsFormat[256] = "-DACCUMULATOR_SIZE=%u -DWARP_SIZE=%u -DACCUMULATE_WARP_COUNT=%u -DMERGE_WARP_COUNT=%u -DMERGE_ACCUMULATOR_COUNT=%u -DUSE_KNUTH";
+constexpr char compileOptionsFormat[256] = "-DACCUMULATOR_SIZE=%u -DACCUMULATOR_COUNT=%u -DWARP_SIZE=%u -DACCUMULATE_WARP_COUNT=%u -DMERGE_WARP_COUNT=%u -DMERGE_ACCUMULATOR_COUNT=%u -DUSE_KNUTH";
 #else
-constexpr char compileOptionsFormat[256] = "-DACCUMULATOR_SIZE=%u -DWARP_SIZE=%u -DACCUMULATE_WARP_COUNT=%u -DMERGE_WARP_COUNT=%u -DMERGE_ACCUMULATOR_COUNT=%u -DUSE_KNUTH -DNVIDIA -cl-mad-enable -cl-fast-relaxed-math";
+constexpr char compileOptionsFormat[256] = "-DACCUMULATOR_SIZE=%u -DACCUMULATOR_COUNT=%u -DWARP_SIZE=%u -DACCUMULATE_WARP_COUNT=%u -DMERGE_WARP_COUNT=%u -DMERGE_ACCUMULATOR_COUNT=%u -DUSE_KNUTH -DNVIDIA -cl-mad-enable -cl-fast-relaxed-math";
 #endif
 
 bool LongAccumulator::s_initializedOpenCL = false;
@@ -165,7 +166,7 @@ cl_int LongAccumulator::InitializeAcc(
     // Building LongAccumulator program
     //
     char compileOptions[256];
-    snprintf(compileOptions, 256, compileOptionsFormat, ACCUMULATOR_SIZE, WARP_SIZE, ACCUMULATE_WARP_COUNT, MERGE_WARP_COUNT, MERGE_ACCUMULATOR_COUNT);
+    snprintf(compileOptions, 256, compileOptionsFormat, ACCUMULATOR_SIZE, ACCUMULATOR_COUNT, WARP_SIZE, ACCUMULATE_WARP_COUNT, MERGE_WARP_COUNT, MERGE_ACCUMULATOR_COUNT);
     ciErrNum = clBuildProgram(s_program, 0, NULL, compileOptions, NULL, NULL);
     if (ciErrNum != CL_SUCCESS) {
         cerr << "Error = " << ciErrNum << "\n";
@@ -338,18 +339,19 @@ float LongAccumulator::Sum(const int N, float *arr, int *err)
 
     // for (int i = 0; i < ACCUMULATOR_COUNT; ++i) {
     //     bool allzero = true;
-    //     for (int j = 0; j < ACCUMULATOR_SIZE && allzero; ++j) {
+    //     for (int j = ACCUMULATOR_SIZE - 1; j >= 0 && allzero; --j) {
     //         if (accumulators[i * ACCUMULATOR_SIZE + j]) {
     //             allzero = false;
     //         }
     //     }
     //     if (!allzero) {
     //         printf("%05u: ", i);
-    //         for (int j = 0; j < ACCUMULATOR_SIZE; ++j) {
-    //             printf("%u%c", accumulators[i * ACCUMULATOR_SIZE + j], j < ACCUMULATOR_SIZE - 1 ? ' ' : '\n');
+    //         for (int j = ACCUMULATOR_SIZE - 1; j >= 0; --j) {
+    //             printf("%u%c", accumulators[i * ACCUMULATOR_SIZE + j], j > 0 ? ' ' : '\n');
     //         }
     //         LongAccumulatorCPU cpuLacc (&accumulators[i * ACCUMULATOR_SIZE]);
     //         printf("CPU Lacc conversion: %f\n", cpuLacc ());
+    //         cout << cpuLacc << "\n\n";
     //     }
     // }
 
@@ -406,22 +408,23 @@ float LongAccumulator::Sum(const int N, float *arr, int *err)
     //     exit(EXIT_FAILURE);
     // }
 
-    // printf("After merge:\n");
+    // printf("After merge:\n\n");
 
     // for (int i = 0; i < ACCUMULATOR_COUNT; ++i) {
     //     bool allzero = true;
-    //     for (int j = 0; j < ACCUMULATOR_SIZE && allzero; ++j) {
+    //     for (int j = ACCUMULATOR_SIZE - 1; j >= 0 && allzero; --j) {
     //         if (accumulators[i * ACCUMULATOR_SIZE + j]) {
     //             allzero = false;
     //         }
     //     }
     //     if (!allzero) {
     //         printf("%.5u: ", i);
-    //         for (int j = 0; j < ACCUMULATOR_SIZE; ++j) {
-    //             printf("%u%c", accumulators[i * ACCUMULATOR_SIZE + j], j < ACCUMULATOR_SIZE - 1 ? ' ' : '\n');
+    //         for (int j = ACCUMULATOR_SIZE - 1; j >= 0; --j) {
+    //             printf("%u%c", accumulators[i * ACCUMULATOR_SIZE + j], j > 0 ? ' ' : '\n');
     //         }
     //         LongAccumulatorCPU cpuLacc (&accumulators[i * ACCUMULATOR_SIZE]);
     //         printf("CPU Lacc conversion: %f\n", cpuLacc ());
+    //         cout << cpuLacc << "\n\n";
     //     }
     // }
 
