@@ -21,7 +21,7 @@ typedef enum {
 } Mode;
 
 constexpr int DEFAULT_ELEMENT_COUNT = 1000;
-constexpr int DEFAULT_REPEAT_COUNT = 100;
+constexpr int DEFAULT_REPEAT_COUNT = 10;
 
 Mode mode = AllOnes;
 int N = DEFAULT_ELEMENT_COUNT;

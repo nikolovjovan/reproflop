@@ -9,7 +9,7 @@ set (EXTRA_LIBS ${EXTRA_LIBS} reproflop_gpu)
 
 # Set default compiler flags.
 #
-set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -march=native -fabi-version=0 -g -Wall -Wno-comment -Wno-maybe-uninitialized")
+set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -march=native -fabi-version=0 -O1 -Wall -Wno-comment -Wno-maybe-uninitialized")
 
 # Link OpenCL library (required for building and executing GPU code).
 #
