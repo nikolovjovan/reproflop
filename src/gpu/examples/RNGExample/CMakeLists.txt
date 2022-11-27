@@ -8,4 +8,5 @@ set (EXAMPLE_TARGET_DIR ${PROJECT_BINARY_DIR}/examples/gpu/RNGExample)
 
 # Traverse example versions.
 #
+add_subdirectory (Base)
 add_subdirectory (StrongReproducibility)
