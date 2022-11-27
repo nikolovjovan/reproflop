@@ -685,35 +685,59 @@ int main(int argc, char *argv[])
     //
     perf_test = true;
 
-    for (element_count = 100; element_count <= 100000000; element_count *= 10)
+    for (int step = 0; step < 2; ++step)
     {
-        cout << "n = " << element_count << "\n\n";
-
-        generate_elements();
-
-        for (int run = 0; run < 3; ++run) run_sequential();
-        cout << '\n';
-
-        for (thread_count = 1; thread_count <= 128; thread_count <<= 1)
-        {
-            for (int run = 0; run < 3; ++run) run_parallel();
-            cout << '\n';
+        if (step == 0) {
+            element_count = 100;
+            exponent_min = DEFAULT_EXPONENT_MIN_VALUE;
+            exponent_max = DEFAULT_EXPONENT_MAX_VALUE;
+        } else {
+            element_count = 10000000;
+            exponent_min = DEFAULT_EXPONENT_MIN_VALUE;
+            exponent_max = DEFAULT_EXPONENT_MAX_VALUE;
         }
 
-        cout << "\nreproducible\n\n";
-
-        for (int run = 0; run < 3; ++run) run_sequential_reproducible();
-        cout << '\n';
-
-        for (thread_count = 1; thread_count <= 128; thread_count <<= 1)
+        for (int i = 0; i < 7; ++i)
         {
-            for (int run = 0; run < 3; ++run) run_parallel_reproducible();
+            if (step == 0) {
+                cout << "n = " << element_count << "\n\n";
+            } else {
+                cout << "maxabs(e) = " << exponent_max << "\n\n";
+            }
+
+            generate_elements();
+
+            for (int run = 0; run < 3; ++run) run_sequential();
             cout << '\n';
+
+            for (thread_count = 1; thread_count <= 128; thread_count <<= 1)
+            {
+                for (int run = 0; run < 3; ++run) run_parallel();
+                cout << '\n';
+            }
+
+            cout << "\nreproducible\n\n";
+
+            for (int run = 0; run < 3; ++run) run_sequential_reproducible();
+            cout << '\n';
+
+            for (thread_count = 1; thread_count <= 128; thread_count <<= 1)
+            {
+                for (int run = 0; run < 3; ++run) run_parallel_reproducible();
+                cout << '\n';
+            }
+
+            delete elements;
+
+            cout << '\n';
+            
+            if (step == 0) {
+                element_count *= 10;
+            } else {
+                exponent_min -= 15;
+                exponent_max += 15;
+            }
         }
-
-        delete elements;
-
-        cout << '\n';
     }
 
     return EXIT_SUCCESS;
