@@ -210,7 +210,7 @@ void generate_elements()
         float number;
         memcpy(&number, &bits, sizeof(uint32_t));
         (*elements)[i] = number;
-        if (print_elements) {
+        if (!perf_test && print_elements) {
             cout << i + 1 << ". element: " << fixed << setprecision(10) << number << " (" << scientific
                  << setprecision(10) << number << ')' << endl;
             if (number > 0) {
@@ -219,6 +219,10 @@ void generate_elements()
                 negative_count++;
             }
         }
+    }
+
+    if (perf_test) {
+        return;
     }
 
     if (print_elements) {
@@ -247,8 +251,12 @@ void run_sequential()
         if (run_idx == 0) {
             sum_sequential = sum;
             time_sequential = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
-            cout << "Sequential sum: " << fixed << setprecision(10) << sum_sequential << " (" << scientific
-                 << setprecision(10) << sum_sequential << ')' << endl;
+            if (perf_test) {
+                cout << fixed << setprecision(10) << (float) time_sequential / 1000.0 << '\t';
+            } else {
+                cout << "Sequential sum: " << fixed << setprecision(10) << sum_sequential << " (" << scientific
+                    << setprecision(10) << sum_sequential << ')' << endl;
+            }
         } else if (sum != sum_sequential) {
             cout << "Sequential sum not reproducible after " << run_idx << " runs!" << endl;
             break;
@@ -278,8 +286,12 @@ void run_sequential_reproducible()
             sum_sequential_reproducible = acc();
             time_sequential_reproducible =
                 chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
-            cout << "Sequential sum (reproducible): " << fixed << setprecision(10) << sum_sequential_reproducible
-                 << " (" << scientific << setprecision(10) << sum_sequential_reproducible << ')' << endl;
+            if (perf_test) {
+                cout << fixed << setprecision(10) << (float) time_sequential_reproducible / 1000.0 << '\t';
+            } else {
+                cout << "Sequential sum (reproducible): " << fixed << setprecision(10) << sum_sequential_reproducible
+                    << " (" << scientific << setprecision(10) << sum_sequential_reproducible << ')' << endl;
+            }
         } else if (acc() != sum_sequential_reproducible) {
             cout << "Sequential sum not reproducible after " << run_idx << " runs!" << endl;
             break;
@@ -392,8 +404,12 @@ void *kernel_sum(void *data)
                     chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
                 sum_parallel = partial_sums[(*reduction_map)[id]];
                 result_valid = true;
-                cout << "Parallel sum: " << fixed << setprecision(10) << sum_parallel << " (" << scientific
-                     << setprecision(10) << sum_parallel << ')' << endl;
+                if (perf_test) {
+                    cout << fixed << setprecision(10) << (float) time_parallel / 1000.0 << '\t';
+                } else {
+                    cout << "Parallel sum: " << fixed << setprecision(10) << sum_parallel << " (" << scientific
+                        << setprecision(10) << sum_parallel << ')' << endl;
+                }
             } else if (partial_sums[(*reduction_map)[id]] != sum_parallel) {
                 cout << "Parallel sum not reproducible after " << repeat_counter << " runs!" << endl;
                 result_valid = false;
@@ -549,8 +565,12 @@ void *kernel_sum_reproducible(void *data)
                     chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
                 sum_parallel_reproducible = partial_sum_accs[(*reduction_map)[id]]();
                 result_valid = true;
-                cout << "Parallel sum (reproducible): " << fixed << setprecision(10) << sum_parallel_reproducible
-                     << " (" << scientific << setprecision(10) << sum_parallel_reproducible << ')' << endl;
+                if (perf_test) {
+                    cout << fixed << setprecision(10) << (float) time_parallel_reproducible / 1000.0 << '\t';
+                } else {
+                    cout << "Parallel sum (reproducible): " << fixed << setprecision(10) << sum_parallel_reproducible
+                        << " (" << scientific << setprecision(10) << sum_parallel_reproducible << ')' << endl;
+                }
             } else if (partial_sum_accs[(*reduction_map)[id]]() != sum_parallel_reproducible) {
                 cout << "Parallel sum (reproducible) not reproducible after " << repeat_counter << " runs!" << endl;
                 result_valid = false;
@@ -656,50 +676,45 @@ void cleanup()
 int main(int argc, char *argv[])
 {
     parse_parameters(argc, argv);
-    print_parameters();
 
-    generate_elements();
+    // Disable reproducibility testing.
+    //
+    repeat_count = 0;
 
-    shuffle_engine = new default_random_engine(seed);
+    // Force performance testing to disable unnecessary logging and optimize parallel algorithm.
+    //
+    perf_test = true;
 
-    run_sequential();
-    run_sequential_reproducible();
-    run_parallel();
-    run_parallel_reproducible();
+    for (element_count = 100; element_count <= 100000000; element_count *= 10)
+    {
+        cout << "n = " << element_count << "\n\n";
 
-    if (sum_sequential != sum_sequential_reproducible) {
-        cout << "Non-reproducible and reproducible sequential sums do not match!" << endl;
+        generate_elements();
+
+        for (int run = 0; run < 3; ++run) run_sequential();
+        cout << '\n';
+
+        for (thread_count = 1; thread_count <= 128; thread_count <<= 1)
+        {
+            for (int run = 0; run < 3; ++run) run_parallel();
+            cout << '\n';
+        }
+
+        cout << "\nreproducible\n\n";
+
+        for (int run = 0; run < 3; ++run) run_sequential_reproducible();
+        cout << '\n';
+
+        for (thread_count = 1; thread_count <= 128; thread_count <<= 1)
+        {
+            for (int run = 0; run < 3; ++run) run_parallel_reproducible();
+            cout << '\n';
+        }
+
+        delete elements;
+
+        cout << '\n';
     }
-
-    if (sum_parallel != sum_parallel_reproducible) {
-        cout << "Non-reproducible and reproducible parallel sums do not match!" << endl;
-    }
-
-    cout << "Reproducible sequential and parallel sums "
-         << (sum_sequential_reproducible != sum_parallel_reproducible ? "do not " : "") << "match!" << endl;
-
-    cout << endl
-         << "Sequential execution time: " << time_sequential << " [us] (" << fixed << setprecision(10)
-         << (float) time_sequential / 1000.0 << " [ms])" << endl;
-    cout << "Parallel execution time: " << time_parallel << " [us] (" << fixed << setprecision(10)
-         << (float) time_parallel / 1000.0 << " [ms])" << endl;
-    cout << "Speedup: " << fixed << setprecision(10) << ((float) time_sequential) / ((float) time_parallel) << endl
-         << endl;
-
-    cout << "Sequential execution time (reproducible): " << time_sequential_reproducible << " [us] (" << fixed
-         << setprecision(10) << (float) time_sequential_reproducible / 1000.0 << " [ms])" << endl;
-    cout << "Parallel execution time (reproducible): " << time_parallel_reproducible << " [us] (" << fixed
-         << setprecision(10) << (float) time_parallel_reproducible / 1000.0 << " [ms])" << endl;
-    cout << "Speedup (reproducible): " << fixed << setprecision(10)
-         << ((float) time_sequential_reproducible) / ((float) time_parallel_reproducible) << endl
-         << endl;
-
-    cout << "Time sequential reproducible / non-reproducible: " << fixed << setprecision(10)
-         << ((float) time_sequential_reproducible) / ((float) time_sequential) << endl;
-    cout << "Time parallel reproducible / non-reproducible: " << fixed << setprecision(10)
-         << ((float) time_parallel_reproducible) / ((float) time_parallel) << endl;
-
-    cleanup();
 
     return EXIT_SUCCESS;
 }
