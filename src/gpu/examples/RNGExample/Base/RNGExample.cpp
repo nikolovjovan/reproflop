@@ -62,7 +62,6 @@ bool perf_test = false;
 // Shared variables
 
 vector<float> *elements;
-default_random_engine *shuffle_engine;
 
 bool is_opencl_initialized = false;
 
@@ -79,8 +78,8 @@ cl_mem data_res = nullptr;
 
 // Results
 
-float sum_sequential, sum_gpu;
-uint64_t time_sequential, time_gpu;
+float sum_gpu;
+uint64_t time_gpu, time_gpu_setup;
 
 void print_usage(char program_name[])
 {
@@ -209,19 +208,6 @@ void parse_parameters(int argc, char *argv[])
     }
 }
 
-void print_parameters()
-{
-    cout << "Parameters:" << endl;
-    cout << "  Thread count:             " << thread_count << endl;
-    cout << "  Element count:            " << element_count << endl;
-    cout << "  Seed:                     " << seed << endl;
-    cout << "  Exponent minimum value:   " << exponent_min << endl;
-    cout << "  Exponent maximum value:   " << exponent_max << endl;
-    cout << "  Repeat count:             " << repeat_count << endl;
-    cout << "  Print elements:           " << (print_elements ? "YES" : "NO") << endl;
-    cout << "  Performance test:         " << (perf_test ? "YES" : "NO") << endl;
-}
-
 void generate_elements()
 {
     mt19937 gen(seed);
@@ -255,37 +241,8 @@ void generate_elements()
         cout << "Number of negative elements: " << negative_count << endl;
     }
 
-    cout << "Successfully generated " << element_count << " random floating-point numbers." << endl;
-}
-
-void run_sequential()
-{
-    chrono::steady_clock::time_point start;
-    float sum;
-    for (int run_idx = 0; run_idx <= repeat_count; ++run_idx) {
-        if (run_idx == 0) {
-            start = chrono::steady_clock::now();
-        }
-        sum = 0;
-        for (int i = 0; i < element_count; ++i) {
-            // NOTE: This operation results in non-reproducible results. The reason is that
-            //       element order is shuffled after every repetition hence rounding errors
-            //       and other inherent errors with floating-point arithmetic occur.
-            sum += (*elements)[i];
-        }
-        if (run_idx == 0) {
-            sum_sequential = sum;
-            time_sequential = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
-            cout << "Sequential sum: " << fixed << setprecision(10) << sum_sequential << " (" << scientific
-                 << setprecision(10) << sum_sequential << ')' << endl;
-        } else if (sum != sum_sequential) {
-            cout << "Sequential sum not reproducible after " << run_idx << " runs!" << endl;
-            break;
-        }
-        if (run_idx < repeat_count) {
-            // Shuffle element vector to incur variability
-            shuffle(elements->begin(), elements->end(), *shuffle_engine);
-        }
+    if (!perf_test) {
+        cout << "Successfully generated " << element_count << " random floating-point numbers." << endl;
     }
 }
 
@@ -399,19 +356,6 @@ void initialize_opencl()
         return;
     }
 
-    // Allocating global OpenCL memory
-    //
-    data_arr = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, element_count * sizeof(cl_float), elements->data(), &ciErrNum);
-    if (ciErrNum != CL_SUCCESS) {
-        cerr << "Error in clCreateBuffer for data_arr, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
-        return;
-    }
-    data_res = clCreateBuffer(context, CL_MEM_READ_WRITE, WORKGROUP_COUNT * sizeof(cl_float), NULL, &ciErrNum);
-    if (ciErrNum != CL_SUCCESS) {
-        cerr <<"Error in clCreateBuffer for data_res, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
-        return;
-    }
-
     // Deallocate temp storage
     //
     free(sourceCode);
@@ -429,22 +373,6 @@ void cleanup_opencl()
 
     // Release memory...
     //
-    if (data_arr) {
-        ciErrNum = clReleaseMemObject(data_arr);
-        if (ciErrNum != CL_SUCCESS) {
-            cerr << "Error = " << ciErrNum << "\n";
-            cerr << "Error in clReleaseMemObject, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
-        }
-    }
-
-    if (data_res) {
-        ciErrNum = clReleaseMemObject(data_res);
-        if (ciErrNum != CL_SUCCESS) {
-            cerr << "Error = " << ciErrNum << "\n";
-            cerr << "Error in clReleaseMemObject, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
-        }
-    }
-
     if (kernel) {
         ciErrNum = clReleaseKernel(kernel);
         if (ciErrNum != CL_SUCCESS) {
@@ -480,6 +408,19 @@ float compute_sum_gpu()
 
     local_work_size = WORKGROUP_SIZE;
     global_work_size = local_work_size * WORKGROUP_COUNT;
+
+    // Allocating global OpenCL memory
+    //
+    data_arr = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, element_count * sizeof(cl_float), elements->data(), &ciErrNum);
+    if (ciErrNum != CL_SUCCESS) {
+        cerr << "Error in clCreateBuffer for data_arr, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        return numeric_limits<float>::signaling_NaN();
+    }
+    data_res = clCreateBuffer(context, CL_MEM_READ_WRITE, WORKGROUP_COUNT * sizeof(cl_float), NULL, &ciErrNum);
+    if (ciErrNum != CL_SUCCESS) {
+        cerr <<"Error in clCreateBuffer for data_res, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        return numeric_limits<float>::signaling_NaN();
+    }
 
     cl_uint i = 0;
     ciErrNum  = clSetKernelArg(kernel, i++, sizeof(cl_uint), (void *)&element_count);
@@ -524,63 +465,141 @@ float compute_sum_gpu()
         sum += partial_sums[i];
     }
 
+    // Release memory...
+    //
+    if (data_arr) {
+        ciErrNum = clReleaseMemObject(data_arr);
+        if (ciErrNum != CL_SUCCESS) {
+            cerr << "Error = " << ciErrNum << "\n";
+            cerr << "Error in clReleaseMemObject, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        }
+    }
+
+    if (data_res) {
+        ciErrNum = clReleaseMemObject(data_res);
+        if (ciErrNum != CL_SUCCESS) {
+            cerr << "Error = " << ciErrNum << "\n";
+            cerr << "Error in clReleaseMemObject, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        }
+    }
+
     return sum;
 }
 
 void run_gpu()
 {
-    initialize_opencl();
-
     chrono::steady_clock::time_point start;
     float sum;
+
+    start = chrono::steady_clock::now();
+    initialize_opencl();
+    time_gpu_setup =
+        chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
+
+    uint64_t run_time[repeat_count + 1];
+
     for (int run_idx = 0; run_idx <= repeat_count; ++run_idx) {
-        if (run_idx == 0) {
-            start = chrono::steady_clock::now();
-        }
+        start = chrono::steady_clock::now();
         sum = compute_sum_gpu();
+        time_gpu = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
+
+        if (perf_test) {
+            run_time[run_idx] = time_gpu;
+        }
+
         if (run_idx == 0) {
             sum_gpu = sum;
-            time_gpu = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
-            cout << "GPU sum: " << fixed << setprecision(10) << sum_gpu << " (" << scientific
-                 << setprecision(10) << sum_gpu << ')' << endl;
+            
+            if (!perf_test) {
+                cout << "GPU sum: " << fixed << setprecision(10) << sum_gpu << " (" << scientific
+                    << setprecision(10) << sum_gpu << ')' << endl;
+            }
         } else if (sum != sum_gpu) {
             cout << "GPU sum not reproducible after " << run_idx << " runs!" << endl;
             break;
         }
-        if (run_idx < repeat_count) {
-            // Shuffle element vector to incur variability
-            shuffle(elements->begin(), elements->end(), *shuffle_engine);
-        }
     }
 
+    start = chrono::steady_clock::now();
     cleanup_opencl();
-}
-
-void cleanup()
-{
-    delete shuffle_engine;
-    delete elements;
+    time_gpu_setup +=
+        chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
+        
+    if (perf_test) {
+        for (int run_idx = 0; run_idx <= repeat_count; ++run_idx) {
+            cout << fixed << setprecision(10) << (float) time_gpu_setup / 1000.0 << (run_idx == repeat_count ? '\n' : '\t');
+        }
+        for (int run_idx = 0; run_idx <= repeat_count; ++run_idx) {
+            cout << fixed << setprecision(10) << (float) run_time[run_idx] / 1000.0 << (run_idx == repeat_count ? '\n' : '\t');
+        }
+    }
 }
 
 int main(int argc, char *argv[])
 {
     parse_parameters(argc, argv);
-    print_parameters();
+    
+    // Retry 3 times.
+    //
+    repeat_count = 2;
 
-    generate_elements();
+    // Force performance testing to disable unnecessary logging and optimize parallel algorithm.
+    //
+    perf_test = true;
 
-    shuffle_engine = new default_random_engine(seed);
+    chrono::steady_clock::time_point start;
+    uint64_t time_first_setup = 0;
 
-    run_sequential();
-    run_gpu();
+    start = chrono::steady_clock::now();
+    initialize_opencl();
+    time_first_setup =
+        chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
 
-    cout << "Sequential execution time: " << time_sequential << " [us] (" << fixed << setprecision(10)
-         << (float) time_sequential / 1000.0 << " [ms])" << endl;
-    cout << "GPU execution time: " << time_gpu << " [us] (" << fixed << setprecision(10)
-         << (float) time_gpu / 1000.0 << " [ms])" << endl;
-    cout << "Speedup: " << fixed << setprecision(10) << ((float) time_sequential) / ((float) time_gpu) << endl;
+    start = chrono::steady_clock::now();
+    cleanup_opencl();
+    time_first_setup +=
+        chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
 
-    cleanup();
+    cout << "OCL first (dummy) setup time : " << fixed << setprecision(10) << (float) time_first_setup / 1000.0 << endl << endl;
+    
+    cout << "The following numbers represent setup and run times for each  run:" << endl;
+    cout << "The first line contains setup times for each run (same for all runs as the setup is shared for each run)." << endl;
+    cout << "The second line contains run times for each run." << endl;
+
+    for (int step = 0; step < 2; ++step)
+    {
+        if (step == 0) {
+            element_count = 100;
+            exponent_min = DEFAULT_EXPONENT_MIN_VALUE;
+            exponent_max = DEFAULT_EXPONENT_MAX_VALUE;
+        } else {
+            element_count = 10000000;
+            exponent_min = DEFAULT_EXPONENT_MIN_VALUE;
+            exponent_max = DEFAULT_EXPONENT_MAX_VALUE;
+        }
+
+        for (int i = 0; i < 7; ++i) {
+            if (step == 0) {
+                cout << "n = " << element_count << "\n\n";
+            } else {
+                cout << "maxabs(e) = " << exponent_max << "\n\n";
+            }
+
+            generate_elements();
+
+            run_gpu();
+            cout << '\n';
+
+            delete elements;
+            
+            if (step == 0) {
+                element_count *= 10;
+            } else {
+                exponent_min -= 15;
+                exponent_max += 15;
+            }
+        }
+    }
 
     return EXIT_SUCCESS;
 }
