@@ -153,7 +153,7 @@ void execute (uint32_t nruns, bool parallel, bool reproducible, int dim, int *h_
             spmv_seq(reproducible, dim, h_nzcnt, h_ptr, h_indices, h_data, h_x_vector, h_perm, tmp_h_Ax_vector);
         if (i == 0) {
             time = omp_get_wtime() - time;
-            cout << fixed << setprecision(10) << (float) time / 1000.0 << '\t';
+            cout << fixed << setprecision(10) << (float) time * 1000.0 << '\t'; // ms
             memcpy (h_Ax_vector, tmp_h_Ax_vector, dim * sizeof (float));
         } else if (diff(dim, h_Ax_vector, tmp_h_Ax_vector)) {
             printf("%s (%sreproducible) implementation not reproducible after %d runs!\n",
@@ -197,6 +197,8 @@ int main (int argc, char** argv)
     exe_path[exe_path_len] = '\0';
 
     char input_file_path[256];
+
+    cout << "unit: [ms]\n\n";
 
     for (int i = 0; i < 3; ++i)
     {

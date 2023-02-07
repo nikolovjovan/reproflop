@@ -252,7 +252,7 @@ void run_sequential()
             sum_sequential = sum;
             time_sequential = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
             if (perf_test) {
-                cout << fixed << setprecision(10) << (float) time_sequential / 1000.0 << '\t';
+                cout << fixed << setprecision(10) << (float) time_sequential / 1000.0 << '\t'; // ms
             } else {
                 cout << "Sequential sum: " << fixed << setprecision(10) << sum_sequential << " (" << scientific
                     << setprecision(10) << sum_sequential << ')' << endl;
@@ -287,7 +287,7 @@ void run_sequential_reproducible()
             time_sequential_reproducible =
                 chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
             if (perf_test) {
-                cout << fixed << setprecision(10) << (float) time_sequential_reproducible / 1000.0 << '\t';
+                cout << fixed << setprecision(10) << (float) time_sequential_reproducible / 1000.0 << '\t'; // ms
             } else {
                 cout << "Sequential sum (reproducible): " << fixed << setprecision(10) << sum_sequential_reproducible
                     << " (" << scientific << setprecision(10) << sum_sequential_reproducible << ')' << endl;
@@ -405,7 +405,7 @@ void *kernel_sum(void *data)
                 sum_parallel = partial_sums[(*reduction_map)[id]];
                 result_valid = true;
                 if (perf_test) {
-                    cout << fixed << setprecision(10) << (float) time_parallel / 1000.0 << '\t';
+                    cout << fixed << setprecision(10) << (float) time_parallel / 1000.0 << '\t'; // ms
                 } else {
                     cout << "Parallel sum: " << fixed << setprecision(10) << sum_parallel << " (" << scientific
                         << setprecision(10) << sum_parallel << ')' << endl;
@@ -566,7 +566,7 @@ void *kernel_sum_reproducible(void *data)
                 sum_parallel_reproducible = partial_sum_accs[(*reduction_map)[id]]();
                 result_valid = true;
                 if (perf_test) {
-                    cout << fixed << setprecision(10) << (float) time_parallel_reproducible / 1000.0 << '\t';
+                    cout << fixed << setprecision(10) << (float) time_parallel_reproducible / 1000.0 << '\t'; // ms
                 } else {
                     cout << "Parallel sum (reproducible): " << fixed << setprecision(10) << sum_parallel_reproducible
                         << " (" << scientific << setprecision(10) << sum_parallel_reproducible << ')' << endl;
@@ -684,6 +684,8 @@ int main(int argc, char *argv[])
     // Force performance testing to disable unnecessary logging and optimize parallel algorithm.
     //
     perf_test = true;
+
+    cout << "unit: [ms]\n\n";
 
     for (int step = 0; step < 2; ++step)
     {
