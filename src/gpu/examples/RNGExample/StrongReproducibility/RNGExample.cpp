@@ -275,10 +275,10 @@ void run_gpu_reproducible()
 
     if (perf_test) {
         for (int run_idx = 0; run_idx <= repeat_count; ++run_idx) {
-            cout << fixed << setprecision(10) << (float) time_gpu_reproducible_setup / 1000.0 << (run_idx == repeat_count ? '\n' : '\t');
+            cout << fixed << setprecision(10) << (float) time_gpu_reproducible_setup / 1000.0 << (run_idx == repeat_count ? '\n' : '\t'); // ms
         }
         for (int run_idx = 0; run_idx <= repeat_count; ++run_idx) {
-            cout << fixed << setprecision(10) << (float) run_time[run_idx] / 1000.0 << (run_idx == repeat_count ? '\n' : '\t');
+            cout << fixed << setprecision(10) << (float) run_time[run_idx] / 1000.0 << (run_idx == repeat_count ? '\n' : '\t'); // ms
         }
     }
 }
@@ -312,11 +312,13 @@ int main(int argc, char *argv[])
     time_first_setup +=
         chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
 
-    cout << "OCL first (dummy) setup time : " << fixed << setprecision(10) << (float) time_first_setup / 1000.0 << endl << endl;
+    cout << "OCL first (dummy) setup time : " << fixed << setprecision(10) << (float) time_first_setup / 1000.0 << endl << endl; // ms
 
     cout << "The following numbers represent setup and run times for each  run:" << endl;
     cout << "The first line contains setup times for each run (same for all runs as the setup is shared for each run)." << endl;
     cout << "The second line contains run times for each run." << endl;
+
+    cout << "unit: [ms]\n\n";
 
     for (int step = 0; step < 2; ++step)
     {
