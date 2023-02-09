@@ -37,6 +37,26 @@ float PackComponentsToFloat(
     return as_float(frep);
 }
 
+float TwoProductFMA(float a, float b, float *error)
+{
+    // Float multiplication rounds the result.
+    // We want to propagate the error in the accumulator.
+    //
+    float rounded_result = a * b;
+
+    // To do this, we use FMA (fused multiply and add):
+    //   float fma (float a, float b, float c)
+    // which returns result: r = (a * b) + c.
+    // FMA executes these operations with only a single rounding step (at the end).
+    //
+    // By subtracting the already rounded result from the (a * b) without rounding
+    // we get the rounding error.
+    //
+    *error = fma(a, b, -rounded_result);
+
+    return rounded_result;
+}
+
 // Local long accumulators are intertwined:
 // 0_0 0_1 0_2 ... 0_(ACCUMULATE_WARP_COUNT - 1) 1_0 1_1 ... /* comment this out when not testing */
 //
@@ -95,6 +115,51 @@ void AddGlobal(
             val = 1;
         } else break;
     }
+}
+
+void Accumulate(
+    __local uint *tlacc,
+    float f,
+    __global uint *accumulators,
+    int i
+)
+{
+    // Extract floating-point components - sign, exponent and mantissa.
+    //
+    float_components components = ExtractFloatComponents(f);
+
+    // Calculate the leftmost word that will be affected.
+    //
+    uint k = (components.exponent + 22) >> 5;
+
+    // Check if more than one word is affected (split mantissa).
+    //
+    bool split = ((components.exponent - 1) >> 5) < k;
+
+    // Calculate number of bits in the higher part of the mantissa.
+    //
+    uint hi_width = (components.exponent - 9) & 0x1F;
+
+    if (!split)
+    {
+        AddLocal(tlacc, k, components.mantissa << (hi_width - 24), components.negative);
+    }
+    else
+    {
+        AddLocal(tlacc, k - 1, components.mantissa << (8 + hi_width), components.negative);
+        AddLocal(tlacc, k, components.mantissa >> (24 - hi_width), components.negative);
+    }
+
+#ifdef LOCAL_ACCUMULATION_TESTING
+    accumulators[i * ACCUMULATOR_SIZE + 0] = components.negative;
+    accumulators[i * ACCUMULATOR_SIZE + 1] = components.exponent;
+    accumulators[i * ACCUMULATOR_SIZE + 2] = components.mantissa;
+    accumulators[i * ACCUMULATOR_SIZE + 3] = k;
+    accumulators[i * ACCUMULATOR_SIZE + 4] = split;
+    accumulators[i * ACCUMULATOR_SIZE + 5] = hi_width;
+    accumulators[i * ACCUMULATOR_SIZE + 6] = components.mantissa << (split ? (24 - hi_width) : (hi_width - 24));
+    accumulators[i * ACCUMULATOR_SIZE + 7] = split ? components.mantissa >> (8 + hi_width) : 0;
+#endif
 }
 
 // Round mantissa to nearest.
@@ -176,46 +241,80 @@ void LongAccumulatorAccumulate (
 
     for (uint i = get_global_id(0); i < N; i += get_global_size(0))
     {
+        Accumulate(tlacc, arr[i], accumulators, i);
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+#ifndef LOCAL_ACCUMULATION_TESTING
+#if defined(LOCAL_MERGE_TESTING)
+    if (get_global_id(0) == 0)
+        for (uint i = 0; i < ACCUMULATE_WARP_COUNT; ++i)
+            for (uint j = 0; j < ACCUMULATOR_SIZE; ++j)
+                accumulators[i * ACCUMULATOR_SIZE + j] = lacc[j * ACCUMULATE_WARP_COUNT + i];
+#elif defined(GLOBAL_MERGE_TESTING)
+    if (get_global_id(0) == 0)
+        for (uint i = 0; i < N; ++i)
+            for (uint j = 0; j < ACCUMULATOR_SIZE; ++j)
+                accumulators[i * ACCUMULATOR_SIZE + j] = j + 1;
+#else
+    // Merge local long accumulators into a single global workgroup-level long accumulator.
+    //
+    if (get_local_id(0) < ACCUMULATOR_SIZE) {
+        accumulators[get_group_id(0) * ACCUMULATOR_SIZE + get_local_id(0)] = 0;
+    }
+
+    barrier(CLK_GLOBAL_MEM_FENCE);
+
+    if (get_local_id(0) < ACCUMULATOR_SIZE) {
+        for (uint i = 0; i < ACCUMULATE_WARP_COUNT; ++i)
+            AddGlobal((accumulators + get_group_id(0) * ACCUMULATOR_SIZE), get_local_id(0), lacc[get_local_id(0) * ACCUMULATE_WARP_COUNT + i], false);
+    }
+#endif
+#endif
+}
+
+__kernel __attribute__((reqd_work_group_size(WORKGROUP_SIZE, 1, 1)))
+void LongAccumulatorDotProduct (
+    const uint N,
+    __global float *arrA,
+    __global float *arrB,
+    __global uint *accumulators)
+{
+    // Workgroup-level local long accumulators.
+    // There is one long accumulator for each warp in a workgroup.
+    // Therefore threads from different warps can share the same long accumulator.
+    // WORKGROUP_SIZE = ACCUMULATE_WARP_COUNT * WARP_SIZE
+    //
+    __local uint lacc[ACCUMULATE_WARP_COUNT * ACCUMULATOR_SIZE] __attribute__((aligned(4)));
+
+    // Thread-level shared long accumulator.
+    // Local long accumulators are intertwined for better memory access:
+    // 0_0 0_1 0_2 ... 0_(ACCUMULATE_WARP_COUNT - 1) 1_0 1_1 ...
+    // The first number indicates a segment of a single long accumulator (0 .. (ACCUMULATOR_SIZE - 1)).
+    // The second number indicates the accumulator which the segment belongs to.
+    //
+    __local uint *tlacc = lacc + (!(ACCUMULATE_WARP_COUNT & (ACCUMULATE_WARP_COUNT - 1)) ?
+        (get_local_id(0) & (ACCUMULATE_WARP_COUNT - 1)) /* power of 2 modulo optimizaation */ :
+        (get_local_id(0) % ACCUMULATE_WARP_COUNT));
+
+    // Initialize thread-level shared long accumulator.
+    //
+    for (uint i = 0; i < ACCUMULATOR_SIZE; ++i)
+        tlacc[i * ACCUMULATE_WARP_COUNT] = 0;
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    for (uint i = get_global_id(0); i < N; i += get_global_size(0))
+    {
         // Fetch element.
         //
-        float f = arr[i];
+        float error = 0.0;
+        float product = TwoProductFMA(arrA[i], arrB[i], &error);
 
-        // Extract floating-point components - sign, exponent and mantissa.
-        //
-        float_components components = ExtractFloatComponents(f);
+        Accumulate(tlacc, product, accumulators, i);
 
-        // Calculate the leftmost word that will be affected.
-        //
-        uint k = (components.exponent + 22) >> 5;
-
-        // Check if more than one word is affected (split mantissa).
-        //
-        bool split = ((components.exponent - 1) >> 5) < k;
-
-        // Calculate number of bits in the higher part of the mantissa.
-        //
-        uint hi_width = (components.exponent - 9) & 0x1F;
-
-        if (!split)
-        {
-            AddLocal(tlacc, k, components.mantissa << (hi_width - 24), components.negative);
+        if (error != 0.0) {
+            Accumulate(tlacc, error, accumulators, i);
         }
-        else
-        {
-            AddLocal(tlacc, k - 1, components.mantissa << (8 + hi_width), components.negative);
-            AddLocal(tlacc, k, components.mantissa >> (24 - hi_width), components.negative);
-        }
-
-#ifdef LOCAL_ACCUMULATION_TESTING
-        accumulators[i * ACCUMULATOR_SIZE + 0] = components.negative;
-        accumulators[i * ACCUMULATOR_SIZE + 1] = components.exponent;
-        accumulators[i * ACCUMULATOR_SIZE + 2] = components.mantissa;
-        accumulators[i * ACCUMULATOR_SIZE + 3] = k;
-        accumulators[i * ACCUMULATOR_SIZE + 4] = split;
-        accumulators[i * ACCUMULATOR_SIZE + 5] = hi_width;
-        accumulators[i * ACCUMULATOR_SIZE + 6] = components.mantissa << (split ? (24 - hi_width) : (hi_width - 24));
-        accumulators[i * ACCUMULATOR_SIZE + 7] = split ? components.mantissa >> (8 + hi_width) : 0;
-#endif
     }
     barrier(CLK_LOCAL_MEM_FENCE);
 
