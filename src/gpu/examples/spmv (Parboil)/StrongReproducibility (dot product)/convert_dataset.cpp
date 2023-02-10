@@ -243,7 +243,7 @@ int coo_to_jds (
 
     if (debug_level >= 1) {
         printf("Converting COO to JDS format (%dx%d)\n%d matrix entries, warp size = %d, "
-               "row padding align = %d, pack size = %d\n\n", rows, cols, nz, warp_size, pad_rows, pack_size);
+               "row padding align = %d, pack size = %d\n", rows, cols, nz, warp_size, pad_rows, pack_size);
     }
 
     /*
@@ -486,7 +486,7 @@ int coo_to_csr (
     int** data_col_index)
 {
     if (debug_level >= 1) {
-        printf("Converting COO to CSR format (%dx%d)\n%d matrix entries\n\n", rows, cols, nz);
+        printf("Converting COO to CSR format (%dx%d)\n%d matrix entries\n", rows, cols, nz);
     }
 
     // Allocate data.

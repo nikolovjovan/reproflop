@@ -263,53 +263,30 @@ void spmv_reproducible_sum(int dim, int *h_nzcnt, int *h_ptr, int *h_indices, fl
     free(products);
 }
 
-void spmv_reproducible(int dim, int *h_nzcnt, int *h_ptr, int *h_indices, float *h_data,
-                       float *h_x_vector, int *h_perm, float *h_Ax_vector)
+void spmv_reproducible(int dim, int *csr_ptr, int *csr_indices, float *csr_data,
+                       float *h_x_vector, float *h_Ax_vector)
 {
-    float* products = (float*) malloc(dim * sizeof(float));
+    float* sel_x_vector = (float*) malloc(dim * sizeof(float));
 
-    // Consider creating a random map by creating an array 0..dim - 1 and randomly shuffling it
-    // for each execution. This should provide required randomness given the order of operations
-    // is sequential at the moment.
-    //
     for (int i = 0; i < dim; i++) {
-        int bound = h_nzcnt[i];
+        int nz_cnt_in_row = csr_ptr[i + 1] - csr_ptr[i];
 
-        for (int k = 0; k < bound; k++) {
-            int j = h_ptr[k] + i;
-            int in = h_indices[j];
-
-            float d = h_data[j];
-            float t = h_x_vector[in];
-
-            products[k] = d * t;
-        }
-
-        if (bound <= 0)
+        if (nz_cnt_in_row <= 0)
         {
-            h_Ax_vector[h_perm[i]] = 0.0f;
+            h_Ax_vector[i] = 0.0f;
+            continue;
         }
-        else
-        {
-            h_Ax_vector[h_perm[i]] = LongAccumulator::Sum(bound, products);
+
+        for (int j = 0; j < nz_cnt_in_row; ++j) {
+            sel_x_vector[j] = h_x_vector[csr_indices[j + csr_ptr[i]]];
         }
+
+        cout << i << ": nz_cnt_in_row = " << nz_cnt_in_row << '\n';
+
+        h_Ax_vector[i] = LongAccumulator::DotProduct(nz_cnt_in_row, csr_data + csr_ptr[i], sel_x_vector);
     }
 
-    free(products);
-}
-
-void spmv(bool reproducible,
-          int dim, int *h_nzcnt, int *h_ptr, int *h_indices, float *h_data,
-          float *h_x_vector, int *h_perm, float *h_Ax_vector)
-{
-    if (reproducible)
-    {
-        spmv_reproducible(dim, h_nzcnt, h_ptr, h_indices, h_data, h_x_vector, h_perm, h_Ax_vector);
-    }
-    else
-    {
-        spmv_ocl(dim, h_nzcnt, h_ptr, h_indices, h_data, h_x_vector, h_perm, h_Ax_vector);
-    }
+    free(sel_x_vector);
 }
 
 void execute(uint32_t nruns, bool reproducible,
@@ -318,15 +295,13 @@ void execute(uint32_t nruns, bool reproducible,
 {
     if (!reproducible)
     {
-        init_ocl();
-
         cout << "Running non-reproducible implementation...\n";
+        init_ocl();
     }
     else
     {
-        LongAccumulator::InitializeOpenCL();
-
         cout << "Running reproducible implementation...\n";
+        LongAccumulator::InitializeOpenCL();
     }
 
     chrono::steady_clock::time_point start;
@@ -339,8 +314,15 @@ void execute(uint32_t nruns, bool reproducible,
         {
             start = chrono::steady_clock::now();
         }
-
-        spmv(reproducible, dim, h_nzcnt, h_ptr, h_indices, h_data, h_x_vector, h_perm, tmp_h_Ax_vector);
+        
+        if (reproducible)
+        {
+            spmv_reproducible(dim, h_ptr, h_indices, h_data, h_x_vector, tmp_h_Ax_vector);
+        }
+        else
+        {
+            spmv_ocl(dim, h_nzcnt, h_ptr, h_indices, h_data, h_x_vector, h_perm, tmp_h_Ax_vector);
+        }
 
         if (i == 0)
         {
@@ -371,6 +353,10 @@ int main(int argc, char **argv)
 {
     struct pb_Parameters *parameters;
 
+    printf("OpenCL accelerated sparse matrix vector multiplication****\n");
+    printf("Original version by Li-Wen Chang <lchang20@illinois.edu> and Shengzhao Wu<wu14@illinois.edu>\n");
+    printf("This version maintained by Chris Rodrigues  ***********\n");
+
     parameters = pb_ReadParameters(&argc, argv);
     if (parameters->inpFiles[0] == NULL)
     {
@@ -381,9 +367,25 @@ int main(int argc, char **argv)
     pb_InitializeTimerSet(&timers);
     pb_SwitchToTimer(&timers, pb_TimerID_COMPUTE);
 
-    int dim, rows, cols, nz;
+    int rows, cols, nz;
     mat_entry* entries;
 
+    // host memory allocation
+    // matrix
+    float *h_data;
+    int *h_indices;
+    int *h_ptr;
+    int *h_perm;
+    int *h_nzcnt;
+    float *csr_data;
+    int *csr_ptr;
+    int *csr_indices;
+    // vector
+    float *h_Ax_vector, *h_Ax_vector_rep;
+    float *h_x_vector;
+
+    // Load matrix from file
+    //
     pb_SwitchToTimer(&timers, pb_TimerID_IO);
 
     read_coo_from_mtx_file(
@@ -394,18 +396,9 @@ int main(int argc, char **argv)
         &nz,
         &entries);
 
-    cout << "dim = " << dim << " rows = " << rows << " cols = " << cols << " nz = " << nz << "\n\n";
-
-    for (int i = 0; i < nz; ++i) {
-        cout << i << ": COO[" << entries[i].row << "][" << entries[i].col << "] = " << entries[i].val << '\n';
-    }
-
-    float *h_data;
-    int *h_indices;
-    int *h_ptr;
-    int *h_perm;
-    int *h_nzcnt;
-    int col_count, len, nzcnt_len, depth;
+    int col_count;
+    
+    pb_SwitchToTimer(&timers, pb_TimerID_COMPUTE);
 
     coo_to_jds(
         rows,
@@ -413,47 +406,43 @@ int main(int argc, char **argv)
         nz,
         entries,
         1,          // row padding
-        1,          // warp size
+        pad,        // warp size
         1,          // pack size
         1,          // debug level [0:2]
         &h_data, &h_ptr, &h_nzcnt, &h_indices, &h_perm,
         &col_count, &len, &nzcnt_len, &depth);
 
-    cout << "col_count = " << col_count << " len = " << len << " nzcnt_len = " << nzcnt_len << " depth = " << depth << "\n\n";
+    // cout << "col_count = " << col_count << " len = " << len << " nzcnt_len = " << nzcnt_len << " depth = " << depth << "\n\n";
 
-    cout << "h_data:\t\t";
-    for (int i = 0; i < nz; ++i) {
-        cout << h_data[i] << '\t';
-    }
-    cout << '\n';
+    // cout << "h_data:\t\t";
+    // for (int i = 0; i < nz; ++i) {
+    //     cout << h_data[i] << '\t';
+    // }
+    // cout << '\n';
 
-    cout << "h_indices:\t";
-    for (int i = 0; i < nz; ++i) {
-        cout << h_indices[i] << '\t';
-    }
-    cout << '\n';
+    // cout << "h_indices:\t";
+    // for (int i = 0; i < nz; ++i) {
+    //     cout << h_indices[i] << '\t';
+    // }
+    // cout << '\n';
 
-    cout << "h_nzcnt:\t";
-    for (int i = 0; i < dim; ++i) {
-        cout << h_nzcnt[i] << '\t';
-    }
-    cout << '\n';
+    // cout << "h_nzcnt:\t";
+    // for (int i = 0; i < dim; ++i) {
+    //     cout << h_nzcnt[i] << '\t';
+    // }
+    // cout << '\n';
 
-    cout << "h_ptr:\t\t";
-    for (int i = 0; i < depth; ++i) {
-        cout << h_ptr[i] << '\t';
-    }
-    cout << '\n';
+    // cout << "h_ptr:\t\t";
+    // for (int i = 0; i < depth; ++i) {
+    //     cout << h_ptr[i] << '\t';
+    // }
+    // cout << '\n';
 
-    cout << "h_perm:\t\t";
-    for (int i = 0; i < dim; ++i) {
-        cout << h_perm[i] << '\t';
-    }
-    cout << '\n';
-
-    float *csr_data;
-    int *csr_ptr;
-    int *csr_indices;
+    // cout << "h_perm:\t\t";
+    // for (int i = 0; i < dim; ++i) {
+    //     cout << h_perm[i] << '\t';
+    // }
+    // cout << '\n';
 
     coo_to_csr(
         rows,
@@ -463,243 +452,115 @@ int main(int argc, char **argv)
         1,
         &csr_data, &csr_ptr, &csr_indices);
 
-    cout << "csr_data:\t";
-    for (int i = 0; i < nz; ++i) {
-        cout << csr_data[i] << '\t';
-    }
-    cout << '\n';
+    // cout << "csr_data:\t";
+    // for (int i = 0; i < nz; ++i) {
+    //     cout << csr_data[i] << '\t';
+    // }
+    // cout << '\n';
 
-    cout << "csr_indices:\t";
-    for (int i = 0; i < nz; ++i) {
-        cout << csr_indices[i] << '\t';
-    }
-    cout << '\n';
+    // cout << "csr_indices:\t";
+    // for (int i = 0; i < nz; ++i) {
+    //     cout << csr_indices[i] << '\t';
+    // }
+    // cout << '\n';
 
-    cout << "csr_ptr:\t";
-    for (int i = 0; i <= rows; ++i) {
-        cout << csr_ptr[i] << '\t';
-    }
-    cout << '\n';
+    // cout << "csr_ptr:\t";
+    // for (int i = 0; i <= rows; ++i) {
+    //     cout << csr_ptr[i] << '\t';
+    // }
+    // cout << '\n';
 
-    cout << '\n';
-    for (int i = 0, entries_idx = 0, h_idx = 0, csr_idx = 0, csr_row = 0; i < rows; ++i)
+    h_Ax_vector = new float[dim];
+    h_Ax_vector_rep = new float[dim];
+
+    h_x_vector = new float[dim];
+
+    uint32_t seed = parameters->seed == 0 ? DEFAULT_SEED : parameters->seed;
+    uint32_t nruns = parameters->nruns == 0 ? DEFAULT_NUMBER_OF_RUNS : parameters->nruns;
+
+    if (!generate_vector(h_x_vector, dim, seed))
     {
-        for (int j = 0; j < cols; ++j)
-        {
-            if (entries[entries_idx].row == i && entries[entries_idx].col == j)
-            {
-                cout << entries[entries_idx].val << '\t';
-                entries_idx++;
-            }
-            else
-            {
-                cout << 0 << '\t';
-            }
-        }
-
-        cout << '\t';
-
-        for (int j = 0; j < cols; ++j)
-        {
-            while (csr_idx >= csr_ptr[csr_row + 1])
-            {
-                csr_row++;
-            }
-
-            if (csr_row == i && csr_idx < csr_ptr[csr_row + 1] && csr_indices[csr_idx] == j)
-            {
-                cout << csr_data[csr_idx] << '\t';
-                csr_idx++;
-            }
-            else
-            {
-                cout << 0 << '\t';
-            }
-        }
-        
-
-        cout << '\n';
+        fprintf(stderr, "Failed to generate dense vector.\n");
+        exit(-1);
     }
+
+    // cout << '\n';
+    // for (int i = 0, entries_idx = 0, h_idx = 0, csr_idx = 0, csr_row = 0; i < rows; ++i)
+    // {
+    //     for (int j = 0; j < cols; ++j)
+    //     {
+    //         if (entries[entries_idx].row == i && entries[entries_idx].col == j)
+    //         {
+    //             cout << entries[entries_idx].val << '\t';
+    //             entries_idx++;
+    //         }
+    //         else
+    //         {
+    //             cout << 0 << '\t';
+    //         }
+    //     }
+
+    //     cout << '\t';
+
+    //     for (int j = 0; j < cols; ++j)
+    //     {
+    //         while (csr_idx >= csr_ptr[csr_row + 1])
+    //         {
+    //             csr_row++;
+    //         }
+
+    //         if (csr_row == i && csr_idx < csr_ptr[csr_row + 1] && csr_indices[csr_idx] == j)
+    //         {
+    //             cout << csr_data[csr_idx] << '\t';
+    //             csr_idx++;
+    //         }
+    //         else
+    //         {
+    //             cout << 0 << '\t';
+    //         }
+    //     }
+        
+    //     cout << '\t' << h_x_vector[i] << '\n';
+    // }
+
+    uint64_t time_non_rep, time_rep;
+
+    execute(nruns, false, dim, h_nzcnt, h_ptr, h_indices, h_data, h_x_vector, h_perm, h_Ax_vector, time_non_rep);
+
+    execute(nruns, true, dim, nullptr, csr_ptr, csr_indices, csr_data, h_x_vector, nullptr, h_Ax_vector_rep, time_rep);
+
+    // for (int i = 0; i < dim; ++i)
+    // {
+    //     cout << fixed << setprecision(10) << h_Ax_vector[i] << '\t' << h_Ax_vector_rep[i] << '\n';
+    // }
+
+    if (diff(dim, h_Ax_vector, h_Ax_vector_rep))
+    {
+        printf("Non-reproducible and reproducible results do not match!\n");
+    }
+
+    printf("Non-reproducible implementation time: %ld [us] (%.3f [ms])\n", time_non_rep, (float) time_non_rep / 1000.0);
+    printf("Reproducible implementation time: %ld [us] (%.3f [ms])\n", time_rep, (float) time_rep / 1000.0);
 
     delete[] h_data;
     delete[] h_indices;
     delete[] h_ptr;
     delete[] h_perm;
     delete[] h_nzcnt;
-
+    
     delete[] csr_data;
     delete[] csr_ptr;
     delete[] csr_indices;
 
-    // for (uint64_t N = 1; N <= 1000000; ++N)
-    // {
-    //     uint64_t expected_dotp_int = 0;
+    delete[] h_Ax_vector_rep;
+    delete[] h_x_vector;
 
-    //     for (uint64_t i = 0; i < N; ++i)
-    //     {
-    //         expected_dotp_int += (i + 1) * (i + 1);
-    //     }
+    delete[] entries;
 
-    //     uint64_t expected_dotp_formula = ((uint64_t) N) * ((uint64_t) (N + 1)) * ((uint64_t) (2 * N + 1)) / ((uint64_t) 6);
+    pb_SwitchToTimer(&timers, pb_TimerID_NONE);
 
-    //     if (expected_dotp_int != expected_dotp_formula)
-    //     {
-    //         cout << "Sequental sum does not match formula with N = " << N << '\n';
-    //         break;
-    //     }
-    // }
-
-    // return 0;
-
-    // if (argc < 2)
-    // {
-    //     cout << "Invalid argument count.\n";
-    //     return -1;
-    // }
-
-    // uint N = atoi(argv[1]);
-
-    // float a[N], b[N];
-    // uint64_t expected_dotp_int = 0;
-
-    // for (uint64_t i = 0; i < N; ++i)
-    // {
-    //     a[i] = i + 1;
-    //     b[i] = i + 1;
-    //     expected_dotp_int += (i + 1) * (i + 1);
-    // }
-
-    // float expected_dotp = (float) expected_dotp_int;
-
-    // cout << "Expected result: " << fixed << setprecision(10) << expected_dotp << '\n';
-
-    // uint64_t expected_dotp_formula = ((uint64_t) N) * ((uint64_t) (N + 1)) * ((uint64_t) (2 * N + 1)) / ((uint64_t) 6);
-
-    // cout << "Expected result (formula): " << fixed << setprecision(10) << expected_dotp_formula << '\n';
-
-    // cout << "Expected result (formula, float): " << fixed << setprecision(10) << (float) expected_dotp_formula << '\n';
-
-    // LongAccumulator::InitializeOpenCL();
-
-    // chrono::steady_clock::time_point start;
-
-    // start = chrono::steady_clock::now();
-    
-    // int err = 0;
-
-    // float actual_dotp = LongAccumulator::DotProduct(N, a, b, &err);
-
-    // uint64_t time = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
-
-    // LongAccumulator::CleanupOpenCL();
-
-    // cout << "Actual result: " << fixed << setprecision(10) << actual_dotp << '\n';
-
-    // cout << "Execution time: " << fixed << setprecision(10) << (float) time / 1000 << " [ms]\n";
-
-    // cout << (expected_dotp == actual_dotp ? "Good\n" : "Bad\n"); 
-
-    // return 0;
-
-    // struct pb_Parameters *parameters;
-
-    // printf("OpenCL accelerated sparse matrix vector multiplication****\n");
-    // printf("Original version by Li-Wen Chang <lchang20@illinois.edu> and Shengzhao Wu<wu14@illinois.edu>\n");
-    // printf("This version maintained by Chris Rodrigues  ***********\n");
-
-    // parameters = pb_ReadParameters(&argc, argv);
-    // if (parameters->inpFiles[0] == NULL)
-    // {
-    //     fprintf(stderr, "Expecting one input filename\n");
-    //     exit(-1);
-    // }
-
-    // pb_InitializeTimerSet(&timers);
-    // pb_SwitchToTimer(&timers, pb_TimerID_COMPUTE);
-
-    // // host memory allocation
-    // // matrix
-    // float *h_data;
-    // int *h_indices;
-    // int *h_ptr;
-    // int *h_perm;
-    // int *h_nzcnt;
-    // // vector
-    // float *h_Ax_vector, *h_Ax_vector_rep;
-    // float *h_x_vector;
-
-    // // load matrix from files
-    // pb_SwitchToTimer(&timers, pb_TimerID_IO);
-
-    // int col_count;
-    // coo_to_jds(
-    //     parameters->inpFiles[0], // bcsstk32.mtx, fidapm05.mtx, jgl009.mtx
-    //     1,                       // row padding
-    //     pad,                     // warp size
-    //     1,                       // pack size
-    //     1,                       // debug level [0:2]
-    //     &h_data, &h_ptr, &h_nzcnt, &h_indices, &h_perm,
-    //     &col_count, &dim, &len, &nzcnt_len, &depth);
-
-    // h_Ax_vector = new float[dim];
-    // h_Ax_vector_rep = new float[dim];
-
-    // h_x_vector = new float[dim];
-
-    // uint32_t seed = parameters->seed == 0 ? DEFAULT_SEED : parameters->seed;
-    // uint32_t nruns = parameters->nruns == 0 ? DEFAULT_NUMBER_OF_RUNS : parameters->nruns;
-
-    // if (!generate_vector(h_x_vector, dim, seed))
-    // {
-    //     fprintf(stderr, "Failed to generate dense vector.\n");
-    //     exit(-1);
-    // }
-
-    // pb_SwitchToTimer(&timers, pb_TimerID_COMPUTE);
-
-    // uint64_t time_non_rep, time_rep;
-
-    // execute(nruns, false, dim, h_nzcnt, h_ptr, h_indices, h_data, h_x_vector, h_perm, h_Ax_vector, time_non_rep);
-
-    // delete[] h_data;
-    // delete[] h_indices;
-    // delete[] h_ptr;
-    // delete[] h_perm;
-    // delete[] h_nzcnt;
-
-    // // need to reload matrix with warp size = 1 (cpu execution)
-    // pad = 1;
-    // coo_to_jds(
-    //     parameters->inpFiles[0], // bcsstk32.mtx, fidapm05.mtx, jgl009.mtx
-    //     1,                       // row padding
-    //     pad,                     // warp size
-    //     1,                       // pack size
-    //     1,                       // debug level [0:2]
-    //     &h_data, &h_ptr, &h_nzcnt, &h_indices, &h_perm,
-    //     &col_count, &dim, &len, &nzcnt_len, &depth);
-
-    // execute(nruns, true, dim, h_nzcnt, h_ptr, h_indices, h_data, h_x_vector, h_perm, h_Ax_vector_rep, time_rep);
-
-    // if (diff(dim, h_Ax_vector, h_Ax_vector_rep))
-    // {
-    //     printf("Non-reproducible and reproducible results do not match!\n");
-    // }
-
-    // printf("Non-reproducible implementation time: %ld [us] (%.3f [ms])\n", time_non_rep, (float) time_non_rep / 1000.0);
-    // printf("Reproducible implementation time: %ld [us] (%.3f [ms])\n", time_rep, (float) time_rep / 1000.0);
-
-    // delete[] h_data;
-    // delete[] h_indices;
-    // delete[] h_ptr;
-    // delete[] h_perm;
-    // delete[] h_nzcnt;
-    // delete[] h_Ax_vector_rep;
-    // delete[] h_x_vector;
-
-    // pb_SwitchToTimer(&timers, pb_TimerID_NONE);
-
-    // pb_PrintTimerSet(&timers);
-    // pb_FreeParameters(parameters);
+    pb_PrintTimerSet(&timers);
+    pb_FreeParameters(parameters);
 
     return 0;
 }

@@ -249,11 +249,9 @@ void spmv_reproducible(int dim, int *h_nzcnt, int *h_ptr, int *h_indices, float 
             products[k] = d * t;
         }
 
-        if (bound <= 0)
-        {
-            h_Ax_vector[h_perm[i]] = 0.0f;
-        }
-        else
+        cout << i << ": bound = " << bound << '\n';
+
+        if (bound > 0)
         {
             h_Ax_vector[h_perm[i]] = LongAccumulator::Sum(bound, products);
         }
