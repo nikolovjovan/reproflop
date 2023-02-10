@@ -500,7 +500,7 @@ void LongAccumulatorRound (
                 return;
             }
 
-            // Calculate the exponent using the inverse of the formula used for "sget_local_id(0)ing" the mantissa into the accumulator.
+            // Calculate the exponent using the inverse of the formula used for "sliding" the mantissa into the accumulator.
             //
             components.exponent = (word_idx << 5) + bit_idx - 22;
 

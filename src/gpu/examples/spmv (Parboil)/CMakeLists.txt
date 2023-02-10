@@ -13,8 +13,9 @@ set (EXAMPLE_TARGET_DIR ${PROJECT_BINARY_DIR}/examples/gpu/${EXAMPLE_TARGET_NAME
 # Traverse example versions.
 #
 add_subdirectory (Base)
-add_subdirectory (StrongReproducibility)
+add_subdirectory ("StrongReproducibility (sum)")
 add_subdirectory ("StrongReproducibility (dot product)")
+add_subdirectory ("StrongReproducibility (spmv)")
 
 # Copy input data files during install.
 #

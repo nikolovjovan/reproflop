@@ -62,6 +62,8 @@ public:
 
     static float DotProduct(const int N, float *arrA, float *arrB, int *err = nullptr);
 
+    static void SparseMatrixDenseVectorProduct(const int N, float *csr_data, int *csr_indices, int *csr_ptr, float *arr, float *result, int *err = nullptr);
+
 private:
     static cl_int InitializeAcc(
         cl_context context,
@@ -80,12 +82,16 @@ private:
     static cl_program s_program;
     static cl_kernel s_clkAccumulate;
     static cl_kernel s_clkDotProduct;
+    static cl_kernel s_clkSpmv;
     static cl_kernel s_clkMerge;
     static cl_kernel s_clkRound;
 
     static cl_mem s_data_arr;
     static cl_mem s_data_arrA;
     static cl_mem s_data_arrB;
+    static cl_mem s_data_csr_data;
+    static cl_mem s_data_csr_indices;
+    static cl_mem s_data_csr_ptr;
     static cl_mem s_data_res;
 
     static cl_mem s_accumulators;

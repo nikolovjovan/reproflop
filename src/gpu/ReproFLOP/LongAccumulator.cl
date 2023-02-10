@@ -117,6 +117,31 @@ void AddGlobal(
     }
 }
 
+void AddGlobalNonAtomic(
+    __global volatile uint *acc,
+    uint idx,
+    uint val,
+    bool negative)
+{
+    uint old = 0;
+    while (idx < ACCUMULATOR_SIZE) {
+        old = acc[idx];
+        if (!negative) {
+            acc[idx] += val;
+            if (old + val < old) { // overflow
+                ++idx;
+                val = 1;
+            } else break;
+        } else {
+            old = atomic_sub(&acc[idx], val);
+            if (old - val > old) { // underflow
+                ++idx;
+                val = 1;
+            } else break;
+        }
+    }
+}
+
 void Accumulate(
     __local uint *tlacc,
     float f,
@@ -160,6 +185,38 @@ void Accumulate(
     accumulators[i * ACCUMULATOR_SIZE + 6] = components.mantissa << (split ? (24 - hi_width) : (hi_width - 24));
     accumulators[i * ACCUMULATOR_SIZE + 7] = split ? components.mantissa >> (8 + hi_width) : 0;
 #endif
+}
+
+void AccumulateGlobal(
+    __global uint *row_acc,
+    float f
+)
+{
+    // Extract floating-point components - sign, exponent and mantissa.
+    //
+    float_components components = ExtractFloatComponents(f);
+
+    // Calculate the leftmost word that will be affected.
+    //
+    uint k = (components.exponent + 22) >> 5;
+
+    // Check if more than one word is affected (split mantissa).
+    //
+    bool split = ((components.exponent - 1) >> 5) < k;
+
+    // Calculate number of bits in the higher part of the mantissa.
+    //
+    uint hi_width = (components.exponent - 9) & 0x1F;
+
+    if (!split)
+    {
+        AddGlobalNonAtomic(row_acc, k, components.mantissa << (hi_width - 24), components.negative);
+    }
+    else
+    {
+        AddGlobalNonAtomic(row_acc, k - 1, components.mantissa << (8 + hi_width), components.negative);
+        AddGlobalNonAtomic(row_acc, k, components.mantissa >> (24 - hi_width), components.negative);
+    }
 }
 
 // Round mantissa to nearest.
@@ -305,8 +362,6 @@ void LongAccumulatorDotProduct (
 
     for (uint i = get_global_id(0); i < N; i += get_global_size(0))
     {
-        // Fetch element.
-        //
         float error = 0.0;
         float product = TwoProductFMA(arrA[i], arrB[i], &error);
 
@@ -344,6 +399,138 @@ void LongAccumulatorDotProduct (
     }
 #endif
 #endif
+}
+
+__kernel __attribute__((reqd_work_group_size(WORKGROUP_SIZE, 1, 1)))
+void LongAccumulatorSparseMatrixDenseVectorProduct (
+    const uint N,
+    __global float *csr_data,
+    __global int *csr_indices,
+    __global int *csr_ptr,
+    __global float *arr,
+    __global float *result,
+    __global uint *accumulators)
+{
+    uint row = get_global_id(0);
+
+    if (row >= N) {
+        return;
+    }
+
+    // One thread executes dot product for one row and has exactly one long accumulator.
+    //
+    __global uint *row_acc = accumulators + row * ACCUMULATOR_SIZE;
+
+    // Initialize long accumulator.
+    //
+    for (uint i = 0; i < ACCUMULATOR_SIZE; ++i)
+        row_acc[i] = 0;
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    uint start = csr_ptr[row];
+    uint end = csr_ptr[row + 1];
+
+    for (uint i = start; i < end; ++i)
+    {
+        // Fetch elements.
+        //
+        float a = csr_data[i];
+        float b = arr[csr_indices[i]];
+
+        float error = 0.0;
+        float product = TwoProductFMA(a, b, &error);
+
+        AccumulateGlobal(row_acc, product);
+
+        if (error != 0.0) {
+            AccumulateGlobal(row_acc, error);
+        }
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    float_components components;
+
+    components.negative = row_acc[ACCUMULATOR_SIZE - 1] & 0x80000000;
+    components.exponent = 0;
+    components.mantissa = 0;
+
+    if (components.negative) {
+        // Invert the words.
+        //
+        for (uint i = 0; i < ACCUMULATOR_SIZE; ++i) {
+            row_acc[i] = ~row_acc[i];
+        }
+
+        // Add 1 to the inverted accumulator to get the absolute value.
+        //
+        AddGlobalNonAtomic(row_acc, 0, 1, false);
+    }
+
+    // Calculate the position of the most significant non-zero word.
+    //
+    int word_idx = ACCUMULATOR_SIZE - 1;
+    while (word_idx >= 0 && row_acc[word_idx] == 0) {
+        word_idx--;
+    }
+
+    // Check if zero.
+    //
+    if (word_idx < 0) {
+        result[row] = PackComponentsToFloat(components);
+        return;
+    }
+
+    // Calculate the position of the most significant bit.
+    //
+    uint mask = 0x80000000;
+    int bit_idx = 31;
+    while (bit_idx >= 0 && !(row_acc[word_idx] & mask)) {
+        bit_idx--;
+        mask >>= 1;
+    }
+
+    // Check if subnormal.
+    //
+    if (word_idx == 0 && bit_idx < 23) {
+        components.mantissa = row_acc[0];
+        result[row] = PackComponentsToFloat(components);
+        return;
+    }
+
+    // Calculate the exponent using the inverse of the formula used for "sliding" the mantissa into the accumulator.
+    //
+    components.exponent = (word_idx << 5) + bit_idx - 22;
+
+    // Check if infinity.
+    //
+    if (components.exponent > 0xFE) {
+        components.exponent = 0xFF;
+        result[row] = PackComponentsToFloat(components);
+        return;
+    }
+
+    // Extract bits of mantissa from current word.
+    //
+    mask = 0xFFFFFFFF;
+    if (bit_idx < 31) {
+        mask = (1 << (bit_idx + 1)) - 1;
+    }
+    components.mantissa = row_acc[word_idx] & mask;
+
+    // Extract mantissa and round to nearest.
+    //
+    if (bit_idx > 23) {
+        components.mantissa >>= bit_idx - 23;
+        RoundMantissa(row_acc, &components, word_idx, bit_idx - 24);
+    } else if (bit_idx == 23) {
+        RoundMantissa(row_acc, &components, word_idx - 1, 31);
+    } else {
+        components.mantissa <<= 23 - bit_idx;
+        components.mantissa |= row_acc[word_idx - 1] >> (bit_idx + 9);
+        RoundMantissa(row_acc, &components, word_idx - 1, bit_idx + 8);
+    }
+
+    result[row] = PackComponentsToFloat(components);
 }
 
 __kernel __attribute__((reqd_work_group_size(MERGE_WORKGROUP_SIZE, 1, 1)))
@@ -444,7 +631,7 @@ void LongAccumulatorRound (
                 return;
             }
 
-            // Calculate the exponent using the inverse of the formula used for "sget_local_id(0)ing" the mantissa into the accumulator.
+            // Calculate the exponent using the inverse of the formula used for "sliding" the mantissa into the accumulator.
             //
             components.exponent = (word_idx << 5) + bit_idx - 22;
 

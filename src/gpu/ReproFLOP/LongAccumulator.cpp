@@ -13,6 +13,7 @@ using namespace std;
 #define OPENCL_PROGRAM_FILENAME "LongAccumulator.cl"
 #define ACCUMULATE_KERNEL_NAME  "LongAccumulatorAccumulate"
 #define DOTPRODUCT_KERNEL_NAME  "LongAccumulatorDotProduct"
+#define SPMV_KERNEL_NAME        "LongAccumulatorSparseMatrixDenseVectorProduct"
 #define MERGE_KERNEL_NAME       "LongAccumulatorMerge"
 #define ROUND_KERNEL_NAME       "LongAccumulatorRound"
 
@@ -33,12 +34,16 @@ cl_command_queue LongAccumulator::s_commandQueue = nullptr;
 cl_program LongAccumulator::s_program = nullptr;
 cl_kernel LongAccumulator::s_clkAccumulate = nullptr;
 cl_kernel LongAccumulator::s_clkDotProduct = nullptr;
+cl_kernel LongAccumulator::s_clkSpmv = nullptr;
 cl_kernel LongAccumulator::s_clkMerge = nullptr;
 cl_kernel LongAccumulator::s_clkRound = nullptr;
 
 cl_mem LongAccumulator::s_data_arr = nullptr;
 cl_mem LongAccumulator::s_data_arrA = nullptr;
 cl_mem LongAccumulator::s_data_arrB = nullptr;
+cl_mem LongAccumulator::s_data_csr_data = nullptr;
+cl_mem LongAccumulator::s_data_csr_indices = nullptr;
+cl_mem LongAccumulator::s_data_csr_ptr = nullptr;
 cl_mem LongAccumulator::s_data_res = nullptr;
 
 cl_mem LongAccumulator::s_accumulators = nullptr;
@@ -205,26 +210,23 @@ cl_int LongAccumulator::InitializeAcc(
         cerr << "Error in clCreateKernel: " DOTPRODUCT_KERNEL_NAME ", Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
         return -6;
     }
+    s_clkSpmv = clCreateKernel(s_program, SPMV_KERNEL_NAME, &ciErrNum);
+    if (ciErrNum != CL_SUCCESS) {
+        cerr << "Error = " << ciErrNum << "\n";
+        cerr << "Error in clCreateKernel: " SPMV_KERNEL_NAME ", Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        return -7;
+    }
     s_clkMerge = clCreateKernel(s_program, MERGE_KERNEL_NAME, &ciErrNum);
     if (ciErrNum != CL_SUCCESS) {
         cerr << "Error = " << ciErrNum << "\n";
         cerr << "Error in clCreateKernel: " MERGE_KERNEL_NAME ", Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
-        return -7;
+        return -8;
     }
     s_clkRound = clCreateKernel(s_program, ROUND_KERNEL_NAME, &ciErrNum);
     if (ciErrNum != CL_SUCCESS) {
         cerr << "Error = " << ciErrNum << "\n";
         cerr << "Error in clCreateKernel: " ROUND_KERNEL_NAME ", Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
-        return -8;
-    }
-
-    // Allocate internal buffers
-    //
-    uint32_t size = ACCUMULATOR_COUNT * ACCUMULATOR_SIZE * sizeof(cl_uint);
-    s_accumulators = clCreateBuffer(s_context, CL_MEM_READ_WRITE, size, NULL, &ciErrNum);
-    if (ciErrNum != CL_SUCCESS) {
-        printf("Error in clCreateBuffer for s_accumulators, Line %u in file %s !!!\n\n", __LINE__, __FILE__);
-        return -8;
+        return -9;
     }
 
     // Deallocate temp storage
@@ -245,21 +247,12 @@ cl_int LongAccumulator::CleanupAcc()
 
     // Release memory...
     //
-    if (s_accumulators) {
-        ciErrNum = clReleaseMemObject(s_accumulators);
-        if (ciErrNum != CL_SUCCESS) {
-            cerr << "Error = " << ciErrNum << "\n";
-            cerr << "Error in clReleaseMemObject, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
-            res |= 1 << 0;
-        }
-    }
-
     if (s_clkAccumulate) {
         ciErrNum = clReleaseKernel(s_clkAccumulate);
         if (ciErrNum != CL_SUCCESS) {
             cerr << "Error = " << ciErrNum << "\n";
             cerr << "Error in clReleaseKernel: " ACCUMULATE_KERNEL_NAME ", Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
-            res |= 1 << 1;
+            res |= 1 << 0;
         }
     }
 
@@ -268,6 +261,15 @@ cl_int LongAccumulator::CleanupAcc()
         if (ciErrNum != CL_SUCCESS) {
             cerr << "Error = " << ciErrNum << "\n";
             cerr << "Error in clReleaseKernel: " DOTPRODUCT_KERNEL_NAME ", Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+            res |= 1 << 1;
+        }
+    }
+
+    if (s_clkSpmv) {
+        ciErrNum = clReleaseKernel(s_clkSpmv);
+        if (ciErrNum != CL_SUCCESS) {
+            cerr << "Error = " << ciErrNum << "\n";
+            cerr << "Error in clReleaseKernel: " SPMV_KERNEL_NAME ", Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
             res |= 1 << 2;
         }
     }
@@ -277,7 +279,7 @@ cl_int LongAccumulator::CleanupAcc()
         if (ciErrNum != CL_SUCCESS) {
             cerr << "Error = " << ciErrNum << "\n";
             cerr << "Error in clReleaseKernel: " MERGE_KERNEL_NAME ", Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
-            res |= 1 << 4;
+            res |= 1 << 3;
         }
     }
 
@@ -286,7 +288,7 @@ cl_int LongAccumulator::CleanupAcc()
         if (ciErrNum != CL_SUCCESS) {
             cerr << "Error = " << ciErrNum << "\n";
             cerr << "Error in clReleaseKernel: " ROUND_KERNEL_NAME ", Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
-            res |= 1 << 8;
+            res |= 1 << 4;
         }
     }
 
@@ -295,7 +297,7 @@ cl_int LongAccumulator::CleanupAcc()
         if (ciErrNum != CL_SUCCESS) {
             cerr << "Error = " << ciErrNum << "\n";
             cerr << "Error in clReleaseProgram, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
-            res |= 1 << 16;
+            res |= 1 << 5;
         }
     }
 
@@ -320,6 +322,14 @@ float LongAccumulator::Sum(const int N, float *arr, int *err)
     s_data_res = clCreateBuffer(s_context, CL_MEM_READ_WRITE, sizeof(cl_float), NULL, &ciErrNum);
     if (ciErrNum != CL_SUCCESS) {
         cerr <<"Error in clCreateBuffer for s_data_res, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        if (err != nullptr) {
+            *err = ciErrNum;
+        }
+        return numeric_limits<float>::signaling_NaN();
+    }
+    s_accumulators = clCreateBuffer(s_context, CL_MEM_READ_WRITE, ACCUMULATOR_COUNT * ACCUMULATOR_SIZE * sizeof(cl_uint), NULL, &ciErrNum);
+    if (ciErrNum != CL_SUCCESS) {
+        cerr <<"Error in clCreateBuffer for s_accumulators, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
         if (err != nullptr) {
             *err = ciErrNum;
         }
@@ -570,6 +580,14 @@ float LongAccumulator::Sum(const int N, float *arr, int *err)
 
     // Release memory...
     //
+    if (s_accumulators) {
+        ciErrNum = clReleaseMemObject(s_accumulators);
+        if (ciErrNum != CL_SUCCESS) {
+            cerr << "Error = " << ciErrNum << "\n";
+            cerr << "Error in clReleaseMemObject, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        }
+    }
+
     if (s_data_arr) {
         ciErrNum = clReleaseMemObject(s_data_arr);
         if (ciErrNum != CL_SUCCESS) {
@@ -619,6 +637,14 @@ float LongAccumulator::DotProduct(const int N, float *arrA, float *arrB, int *er
     s_data_res = clCreateBuffer(s_context, CL_MEM_READ_WRITE, sizeof(cl_float), NULL, &ciErrNum);
     if (ciErrNum != CL_SUCCESS) {
         cerr <<"Error in clCreateBuffer for s_data_res, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        if (err != nullptr) {
+            *err = ciErrNum;
+        }
+        return numeric_limits<float>::signaling_NaN();
+    }
+    s_accumulators = clCreateBuffer(s_context, CL_MEM_READ_WRITE, ACCUMULATOR_COUNT * ACCUMULATOR_SIZE * sizeof(cl_uint), NULL, &ciErrNum);
+    if (ciErrNum != CL_SUCCESS) {
+        cerr <<"Error in clCreateBuffer for s_accumulators, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
         if (err != nullptr) {
             *err = ciErrNum;
         }
@@ -870,6 +896,14 @@ float LongAccumulator::DotProduct(const int N, float *arrA, float *arrB, int *er
 
     // Release memory...
     //
+    if (s_accumulators) {
+        ciErrNum = clReleaseMemObject(s_accumulators);
+        if (ciErrNum != CL_SUCCESS) {
+            cerr << "Error = " << ciErrNum << "\n";
+            cerr << "Error in clReleaseMemObject, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        }
+    }
+
     if (s_data_arrA) {
         ciErrNum = clReleaseMemObject(s_data_arrA);
         if (ciErrNum != CL_SUCCESS) {
@@ -899,4 +933,158 @@ float LongAccumulator::DotProduct(const int N, float *arrA, float *arrB, int *er
     }
 
     return result;
+}
+
+void LongAccumulator::SparseMatrixDenseVectorProduct(const int N, float *csr_data, int *csr_indices, int *csr_ptr, float *arr, float *result, int *err)
+{
+    cl_int ciErrNum;
+
+    int nz_count = csr_ptr[N];
+
+    // Allocating OpenCL memory...
+    //
+    s_data_csr_data = clCreateBuffer(s_context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, nz_count * sizeof(cl_float), csr_data, &ciErrNum);
+    if (ciErrNum != CL_SUCCESS) {
+        cerr << "Error in clCreateBuffer for s_data_csr_data, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        if (err != nullptr) {
+            *err = ciErrNum;
+        }
+        return;
+    }
+    s_data_csr_indices = clCreateBuffer(s_context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, nz_count * sizeof(cl_int), csr_indices, &ciErrNum);
+    if (ciErrNum != CL_SUCCESS) {
+        cerr << "Error in clCreateBuffer for s_data_csr_indices, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        if (err != nullptr) {
+            *err = ciErrNum;
+        }
+        return;
+    }
+    s_data_csr_ptr = clCreateBuffer(s_context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, (N + 1) * sizeof(cl_int), csr_ptr, &ciErrNum);
+    if (ciErrNum != CL_SUCCESS) {
+        cerr << "Error in clCreateBuffer for s_data_csr_ptr, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        if (err != nullptr) {
+            *err = ciErrNum;
+        }
+        return;
+    }
+    s_data_arr = clCreateBuffer(s_context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, N * sizeof(cl_float), arr, &ciErrNum);
+    if (ciErrNum != CL_SUCCESS) {
+        cerr << "Error in clCreateBuffer for s_data_arr, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        if (err != nullptr) {
+            *err = ciErrNum;
+        }
+        return;
+    }
+    s_data_res = clCreateBuffer(s_context, CL_MEM_READ_WRITE, N * sizeof(cl_float), NULL, &ciErrNum);
+    if (ciErrNum != CL_SUCCESS) {
+        cerr <<"Error in clCreateBuffer for s_data_res, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        if (err != nullptr) {
+            *err = ciErrNum;
+        }
+        return;
+    }
+    s_accumulators = clCreateBuffer(s_context, CL_MEM_READ_WRITE, N * ACCUMULATOR_SIZE * sizeof(cl_uint), NULL, &ciErrNum);
+    if (ciErrNum != CL_SUCCESS) {
+        cerr <<"Error in clCreateBuffer for s_accumulators, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        if (err != nullptr) {
+            *err = ciErrNum;
+        }
+        return;
+    }
+
+    {
+        // Naive implementation with a single thread (and accumulator) per row.
+        //
+        size_t local_work_size = ACCUMULATE_WORKGROUP_SIZE;
+        size_t global_work_size = local_work_size * ((N + local_work_size - 1) / local_work_size);
+
+        cl_uint i = 0;
+        ciErrNum  = clSetKernelArg(s_clkSpmv, i++, sizeof(cl_uint), (void *)&N);
+        ciErrNum |= clSetKernelArg(s_clkSpmv, i++, sizeof(cl_mem),  (void *)&s_data_csr_data);
+        ciErrNum |= clSetKernelArg(s_clkSpmv, i++, sizeof(cl_mem),  (void *)&s_data_csr_indices);
+        ciErrNum |= clSetKernelArg(s_clkSpmv, i++, sizeof(cl_mem),  (void *)&s_data_csr_ptr);
+        ciErrNum |= clSetKernelArg(s_clkSpmv, i++, sizeof(cl_mem),  (void *)&s_data_arr);
+        ciErrNum |= clSetKernelArg(s_clkSpmv, i++, sizeof(cl_mem),  (void *)&s_data_res);
+        ciErrNum |= clSetKernelArg(s_clkSpmv, i++, sizeof(cl_mem),  (void *)&s_accumulators);
+        if (ciErrNum != CL_SUCCESS) {
+            printf("Error in clSetKernelArg, Line %u in file %s !!!\n\n", __LINE__, __FILE__);
+            if (err != nullptr) {
+                *err = ciErrNum;
+            }
+            return;
+        }
+
+        ciErrNum = clEnqueueNDRangeKernel(
+            s_commandQueue,
+            s_clkSpmv,
+            /* work_dim */ 1,
+            /* global_work_offset */ NULL,
+            &global_work_size,
+            &local_work_size,
+            /* num_events_in_wait_list */ 0,
+            /* event_wait_list* */ NULL,
+            /* event */ NULL);
+        if (ciErrNum != CL_SUCCESS) {
+            printf("Error in clEnqueueNDRangeKernel, Line %u in file %s !!!\n\n", __LINE__, __FILE__);
+            if (err != nullptr) {
+                *err = ciErrNum;
+            }
+            return;
+        }
+    }
+
+    // Retrieve result.
+    //
+    ciErrNum = clEnqueueReadBuffer(s_commandQueue, s_data_res, CL_TRUE, 0, N * sizeof(cl_float), result, 0, NULL, NULL);
+    if (ciErrNum != CL_SUCCESS) {
+        printf("ciErrNum = %d\n", ciErrNum);
+        printf("Error in clEnqueueReadBuffer Line %u in file %s !!!\n\n", __LINE__, __FILE__);
+        exit(EXIT_FAILURE);
+    }
+
+    // Release memory...
+    //
+    if (s_accumulators) {
+        ciErrNum = clReleaseMemObject(s_accumulators);
+        if (ciErrNum != CL_SUCCESS) {
+            cerr << "Error = " << ciErrNum << "\n";
+            cerr << "Error in clReleaseMemObject, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        }
+    }
+
+    if (s_data_csr_data) {
+        ciErrNum = clReleaseMemObject(s_data_csr_data);
+        if (ciErrNum != CL_SUCCESS) {
+            cerr << "Error = " << ciErrNum << "\n";
+            cerr << "Error in clReleaseMemObject, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        }
+    }
+
+    if (s_data_csr_indices) {
+        ciErrNum = clReleaseMemObject(s_data_csr_indices);
+        if (ciErrNum != CL_SUCCESS) {
+            cerr << "Error = " << ciErrNum << "\n";
+            cerr << "Error in clReleaseMemObject, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        }
+    }
+
+    if (s_data_arr) {
+        ciErrNum = clReleaseMemObject(s_data_arr);
+        if (ciErrNum != CL_SUCCESS) {
+            cerr << "Error = " << ciErrNum << "\n";
+            cerr << "Error in clReleaseMemObject, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        }
+    }
+
+    if (s_data_res) {
+        ciErrNum = clReleaseMemObject(s_data_res);
+        if (ciErrNum != CL_SUCCESS) {
+            cerr << "Error = " << ciErrNum << "\n";
+            cerr << "Error in clReleaseMemObject, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        }
+    }
+
+    if (err != nullptr) {
+        *err = ciErrNum;
+    }
 }
