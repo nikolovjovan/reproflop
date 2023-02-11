@@ -29,13 +29,13 @@ using namespace std;
 constexpr uint32_t DEFAULT_SEED = 1549813198;
 constexpr uint32_t DEFAULT_NUMBER_OF_RUNS = 50;
 
-struct pb_TimerSet timers;
+constexpr char* input_files[] = { "bcsstk32.mtx", "fidapm05.mtx", "jgl009.mtx" };
 
-int len;
-int depth;
-int dim;
+int len = 1;
+int depth = 1;
+int dim = 1;
 int pad = 32;
-int nzcnt_len;
+int nzcnt_len = 1;
 
 const char *clSource[1];
 
@@ -84,10 +84,8 @@ bool generate_vector(float *x_vector, int dim, uint32_t seed)
 bool diff(int dim, float *h_Ax_vector_1, float *h_Ax_vector_2)
 {
     for (int i = 0; i < dim; i++)
-        if (h_Ax_vector_1[i] != h_Ax_vector_2[i]) {
-            cout << "Difference found on " << i + 1 << ". element: " << h_Ax_vector_1[i] << " : " << h_Ax_vector_2[i] << '\n';
+        if (h_Ax_vector_1[i] != h_Ax_vector_2[i])
             return true;
-        }
     return false;
 }
 
@@ -164,8 +162,6 @@ void cleanup_ocl()
 void spmv_ocl(int dim, int *h_nzcnt, int *h_ptr, int *h_indices, float *h_data,
               float *h_x_vector, int *h_perm, float *h_Ax_vector)
 {
-    pb_SwitchToTimer(&timers, pb_TimerID_COPY);
-
     // cleanup memory
     clMemSet(clCommandQueue, d_Ax_vector, 0, dim * sizeof(float));
 
@@ -183,8 +179,6 @@ void spmv_ocl(int dim, int *h_nzcnt, int *h_ptr, int *h_indices, float *h_data,
     CHECK_ERROR("clEnqueueWriteBuffer")
     clStatus = clEnqueueWriteBuffer(clCommandQueue, sh_zcnt_int, CL_TRUE, 0, nzcnt_len * sizeof(int), h_nzcnt, 0, NULL, NULL);
     CHECK_ERROR("clEnqueueWriteBuffer")
-
-    pb_SwitchToTimer(&timers, pb_TimerID_COMPUTE);
 
     size_t grid;
     size_t block;
@@ -212,20 +206,15 @@ void spmv_ocl(int dim, int *h_nzcnt, int *h_ptr, int *h_indices, float *h_data,
     CHECK_ERROR("clSetKernelArg")
 
     // main execution
-    pb_SwitchToTimer(&timers, pb_TimerID_KERNEL);
-
     clStatus = clEnqueueNDRangeKernel(clCommandQueue, clKernel, 1, NULL, &grid, &block, 0, NULL, NULL);
     CHECK_ERROR("clEnqueueNDRangeKernel")
 
     clStatus = clFinish(clCommandQueue);
     CHECK_ERROR("clFinish")
 
-    pb_SwitchToTimer(&timers, pb_TimerID_COPY);
     // HtoD memory copy
     clStatus = clEnqueueReadBuffer(clCommandQueue, d_Ax_vector, CL_TRUE, 0, dim * sizeof(float), h_Ax_vector, 0, NULL, NULL);
     CHECK_ERROR("clEnqueueReadBuffer")
-
-    pb_SwitchToTimer(&timers, pb_TimerID_NONE);
 }
 
 void spmv_reproducible_sum(int dim, int *h_nzcnt, int *h_ptr, int *h_indices, float *h_data,
@@ -250,11 +239,7 @@ void spmv_reproducible_sum(int dim, int *h_nzcnt, int *h_ptr, int *h_indices, fl
             products[k] = d * t;
         }
 
-        if (bound <= 0)
-        {
-            h_Ax_vector[h_perm[i]] = 0.0f;
-        }
-        else
+        if (bound > 0)
         {
             h_Ax_vector[h_perm[i]] = LongAccumulator::Sum(bound, products);
         }
@@ -273,15 +258,12 @@ void spmv_reproducible_dot(int dim, int *csr_ptr, int *csr_indices, float *csr_d
 
         if (nz_cnt_in_row <= 0)
         {
-            h_Ax_vector[i] = 0.0f;
             continue;
         }
 
         for (int j = 0; j < nz_cnt_in_row; ++j) {
             sel_x_vector[j] = h_x_vector[csr_indices[j + csr_ptr[i]]];
         }
-
-        cout << i << ": nz_cnt_in_row = " << nz_cnt_in_row << '\n';
 
         h_Ax_vector[i] = LongAccumulator::DotProduct(nz_cnt_in_row, csr_data + csr_ptr[i], sel_x_vector);
     }
@@ -295,84 +277,39 @@ void spmv_reproducible_spmv(int dim, int *csr_ptr, int *csr_indices, float *csr_
     LongAccumulator::SparseMatrixDenseVectorProduct(dim, csr_data, csr_indices, csr_ptr, h_x_vector, h_Ax_vector);
 }
 
-void execute(uint32_t nruns, bool reproducible,
-             int dim, int *h_nzcnt, int *h_ptr, int *h_indices, float *h_data,
-             float *h_x_vector, int *h_perm, float *h_Ax_vector, uint64_t &time)
+void execute(bool reproducible, int dim, int *h_nzcnt, int *h_ptr, int *h_indices, float *h_data,
+             float *h_x_vector, int *h_perm, float *h_Ax_vector,
+             uint64_t &time_setup, uint64_t &time_run)
 {
-    if (!reproducible)
-    {
-        cout << "Running non-reproducible implementation...\n";
-        init_ocl();
-    }
-    else
-    {
-        cout << "Running reproducible implementation...\n";
-        LongAccumulator::InitializeOpenCL();
-    }
-
     chrono::steady_clock::time_point start;
 
-    float *tmp_h_Ax_vector = new float[dim];
-
-    for (int i = 0; i < nruns; ++i)
-    {
-        if (i == 0)
-        {
-            start = chrono::steady_clock::now();
-        }
-        
-        if (reproducible)
-        {
-            spmv_reproducible_spmv(dim, h_ptr, h_indices, h_data, h_x_vector, tmp_h_Ax_vector);
-        }
-        else
-        {
-            spmv_ocl(dim, h_nzcnt, h_ptr, h_indices, h_data, h_x_vector, h_perm, tmp_h_Ax_vector);
-        }
-
-        if (i == 0)
-        {
-            time = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
-            memcpy(h_Ax_vector, tmp_h_Ax_vector, dim * sizeof(float));
-        }
-        else if (diff(dim, h_Ax_vector, tmp_h_Ax_vector))
-        {
-            printf("%seproducible implementation not reproducible after %d runs!\n",
-                   reproducible ? "R" : "Non-r", i);
-            break;
-        }
+    start = chrono::steady_clock::now();
+    if (reproducible) {
+        LongAccumulator::InitializeOpenCL();
+    } else {
+        init_ocl();
     }
+    time_setup = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
 
-    delete[] tmp_h_Ax_vector;
+    start = chrono::steady_clock::now();
+    if (reproducible) {
+        spmv_reproducible_spmv(dim, h_ptr, h_indices, h_data, h_x_vector, h_Ax_vector);
+    } else {
+        spmv_ocl(dim, h_nzcnt, h_ptr, h_indices, h_data, h_x_vector, h_perm, h_Ax_vector);
+    }
+    time_run = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
 
-    if (!reproducible)
-    {
+    start = chrono::steady_clock::now();
+    if (reproducible) {
+        LongAccumulator::CleanupOpenCL();
+    } else {
         cleanup_ocl();
     }
-    else
-    {
-        LongAccumulator::CleanupOpenCL();
-    }
+    time_setup += chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
 }
 
 int main(int argc, char **argv)
 {
-    struct pb_Parameters *parameters;
-
-    printf("OpenCL accelerated sparse matrix vector multiplication****\n");
-    printf("Original version by Li-Wen Chang <lchang20@illinois.edu> and Shengzhao Wu<wu14@illinois.edu>\n");
-    printf("This version maintained by Chris Rodrigues  ***********\n");
-
-    parameters = pb_ReadParameters(&argc, argv);
-    if (parameters->inpFiles[0] == NULL)
-    {
-        fprintf(stderr, "Expecting one input filename\n");
-        exit(-1);
-    }
-
-    pb_InitializeTimerSet(&timers);
-    pb_SwitchToTimer(&timers, pb_TimerID_COMPUTE);
-
     int rows, cols, nz;
     mat_entry* entries;
 
@@ -390,183 +327,126 @@ int main(int argc, char **argv)
     float *h_Ax_vector, *h_Ax_vector_rep;
     float *h_x_vector;
 
-    // Load matrix from file
-    //
-    pb_SwitchToTimer(&timers, pb_TimerID_IO);
+    const int exe_path_len = strrchr(argv[0], '/') - argv[0] + 1;
+    char exe_path[256];
+    strncpy(exe_path, argv[0], exe_path_len);
+    exe_path[exe_path_len] = '\0';
 
-    read_coo_from_mtx_file(
-        parameters->inpFiles[0], // bcsstk32.mtx, fidapm05.mtx, jgl009.mtx
-        &dim,
-        &rows,
-        &cols,
-        &nz,
-        &entries);
+    char input_file_path[256];
+
+    cout << "unit: [ms]\n\n";
 
     int col_count;
+
+    uint64_t time_setup[3], time_run[3];
+    uint64_t time_setup_rep[3], time_run_rep[3];
+
+    chrono::steady_clock::time_point start;
+    uint64_t time_first_setup = 0;
+
+    start = chrono::steady_clock::now();
+    init_ocl();
+    time_first_setup =
+        chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
+
+    start = chrono::steady_clock::now();
+    cleanup_ocl();
+    time_first_setup +=
+        chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
+
+    cout << "OCL first (dummy) setup time : " << fixed << setprecision(10) << (float) time_first_setup / 1000.0 << endl << endl;
     
-    pb_SwitchToTimer(&timers, pb_TimerID_COMPUTE);
+    cout << "The following numbers represent setup and run times for each run:" << endl;
+    cout << "The first line contains setup times for each run." << endl;
+    cout << "The second line contains run times for each run." << endl;
 
-    coo_to_jds(
-        rows,
-        cols,
-        nz,
-        entries,
-        1,          // row padding
-        pad,        // warp size
-        1,          // pack size
-        1,          // debug level [0:2]
-        &h_data, &h_ptr, &h_nzcnt, &h_indices, &h_perm,
-        &col_count, &len, &nzcnt_len, &depth);
-
-    // cout << "col_count = " << col_count << " len = " << len << " nzcnt_len = " << nzcnt_len << " depth = " << depth << "\n\n";
-
-    // cout << "h_data:\t\t";
-    // for (int i = 0; i < nz; ++i) {
-    //     cout << h_data[i] << '\t';
-    // }
-    // cout << '\n';
-
-    // cout << "h_indices:\t";
-    // for (int i = 0; i < nz; ++i) {
-    //     cout << h_indices[i] << '\t';
-    // }
-    // cout << '\n';
-
-    // cout << "h_nzcnt:\t";
-    // for (int i = 0; i < dim; ++i) {
-    //     cout << h_nzcnt[i] << '\t';
-    // }
-    // cout << '\n';
-
-    // cout << "h_ptr:\t\t";
-    // for (int i = 0; i < depth; ++i) {
-    //     cout << h_ptr[i] << '\t';
-    // }
-    // cout << '\n';
-
-    // cout << "h_perm:\t\t";
-    // for (int i = 0; i < dim; ++i) {
-    //     cout << h_perm[i] << '\t';
-    // }
-    // cout << '\n';
-
-    coo_to_csr(
-        rows,
-        cols,
-        nz,
-        entries,
-        1,
-        &csr_data, &csr_ptr, &csr_indices);
-
-    // cout << "csr_data:\t";
-    // for (int i = 0; i < nz; ++i) {
-    //     cout << csr_data[i] << '\t';
-    // }
-    // cout << '\n';
-
-    // cout << "csr_indices:\t";
-    // for (int i = 0; i < nz; ++i) {
-    //     cout << csr_indices[i] << '\t';
-    // }
-    // cout << '\n';
-
-    // cout << "csr_ptr:\t";
-    // for (int i = 0; i <= rows; ++i) {
-    //     cout << csr_ptr[i] << '\t';
-    // }
-    // cout << '\n';
-
-    h_Ax_vector = new float[dim];
-    h_Ax_vector_rep = new float[dim];
-
-    h_x_vector = new float[dim];
-
-    uint32_t seed = parameters->seed == 0 ? DEFAULT_SEED : parameters->seed;
-    uint32_t nruns = parameters->nruns == 0 ? DEFAULT_NUMBER_OF_RUNS : parameters->nruns;
-
-    if (!generate_vector(h_x_vector, dim, seed))
+    for (int i = 0; i < 3; ++i)
     {
-        fprintf(stderr, "Failed to generate dense vector.\n");
-        exit(-1);
-    }
+        strncpy(input_file_path, exe_path, exe_path_len + 1);
+        strcat(input_file_path, "data/");
+        strcat(input_file_path, input_files[i]);
 
-    // cout << '\n';
-    // for (int i = 0, entries_idx = 0, h_idx = 0, csr_idx = 0, csr_row = 0; i < rows; ++i)
-    // {
-    //     for (int j = 0; j < cols; ++j)
-    //     {
-    //         if (entries[entries_idx].row == i && entries[entries_idx].col == j)
-    //         {
-    //             cout << entries[entries_idx].val << '\t';
-    //             entries_idx++;
-    //         }
-    //         else
-    //         {
-    //             cout << 0 << '\t';
-    //         }
-    //     }
+        cout << '\n' << input_files[i] << "\n\n";
 
-    //     cout << '\t';
+        // Load matrix from file
+        //
+        read_coo_from_mtx_file(
+            input_file_path, // bcsstk32.mtx, fidapm05.mtx, jgl009.mtx
+            &dim,
+            &rows,
+            &cols,
+            &nz,
+            &entries);
 
-    //     for (int j = 0; j < cols; ++j)
-    //     {
-    //         while (csr_idx >= csr_ptr[csr_row + 1])
-    //         {
-    //             csr_row++;
-    //         }
+        coo_to_jds(
+            rows,
+            cols,
+            nz,
+            entries,
+            1,          // row padding
+            pad,        // warp size
+            1,          // pack size
+            0,          // debug level [0:2]
+            &h_data, &h_ptr, &h_nzcnt, &h_indices, &h_perm,
+            &col_count, &len, &nzcnt_len, &depth);
 
-    //         if (csr_row == i && csr_idx < csr_ptr[csr_row + 1] && csr_indices[csr_idx] == j)
-    //         {
-    //             cout << csr_data[csr_idx] << '\t';
-    //             csr_idx++;
-    //         }
-    //         else
-    //         {
-    //             cout << 0 << '\t';
-    //         }
-    //     }
+        coo_to_csr(
+            rows,
+            cols,
+            nz,
+            entries,
+            0,          // debug level [0:2]
+            &csr_data, &csr_ptr, &csr_indices);
+
+        h_x_vector = new float[dim];
+
+        if (!generate_vector(h_x_vector, dim, DEFAULT_SEED)) {
+            fprintf(stderr, "Failed to generate dense vector.\n");
+            exit(-1);
+        }
+
+        h_Ax_vector = (float*) calloc(dim, sizeof(float));
+        h_Ax_vector_rep = (float*) calloc(dim, sizeof(float));
+
+        cout << "\nnon-reproducible\n\n";
+
+        for (int run = 0; run < 3; ++run) execute(false, dim, h_nzcnt, h_ptr, h_indices, h_data, h_x_vector, h_perm, h_Ax_vector, time_setup[run], time_run[run]);
+
+        for (int run = 0; run < 3; ++run) {
+            cout << fixed << setprecision(10) << (float) time_setup[run] / 1000.0 << (run < 2 ? '\t' : '\n');
+        }
+        for (int run = 0; run < 3; ++run) {
+            cout << fixed << setprecision(10) << (float) time_run[run] / 1000.0 << (run < 2 ? '\t' : '\n');
+        }
+
+        cout << "\nreproducible\n\n";
+
+        for (int run = 0; run < 3; ++run) execute(true, dim, nullptr, csr_ptr, csr_indices, csr_data, h_x_vector, nullptr, h_Ax_vector_rep, time_setup_rep[run], time_run_rep[run]);
+
+        for (int run = 0; run < 3; ++run) {
+            cout << fixed << setprecision(10) << (float) time_setup_rep[run] / 1000.0 << (run < 2 ? '\t' : '\n');
+        }
+        for (int run = 0; run < 3; ++run) {
+            cout << fixed << setprecision(10) << (float) time_run_rep[run] / 1000.0 << (run < 2 ? '\t' : '\n');
+        }
+
+        delete[] h_data;
+        delete[] h_indices;
+        delete[] h_ptr;
+        delete[] h_perm;
+        delete[] h_nzcnt;
         
-    //     cout << '\t' << h_x_vector[i] << '\n';
-    // }
+        delete[] csr_data;
+        delete[] csr_ptr;
+        delete[] csr_indices;
 
-    uint64_t time_non_rep, time_rep;
+        delete[] h_x_vector;
 
-    execute(nruns, false, dim, h_nzcnt, h_ptr, h_indices, h_data, h_x_vector, h_perm, h_Ax_vector, time_non_rep);
+        free(h_Ax_vector);
+        free(h_Ax_vector_rep);
 
-    execute(nruns, true, dim, nullptr, csr_ptr, csr_indices, csr_data, h_x_vector, nullptr, h_Ax_vector_rep, time_rep);
-
-    // for (int i = 0; i < dim; ++i)
-    // {
-    //     cout << fixed << setprecision(10) << h_Ax_vector[i] << '\t' << h_Ax_vector_rep[i] << '\n';
-    // }
-
-    if (diff(dim, h_Ax_vector, h_Ax_vector_rep))
-    {
-        printf("Non-reproducible and reproducible results do not match!\n");
+        delete[] entries;
     }
-
-    printf("Non-reproducible implementation time: %ld [us] (%.3f [ms])\n", time_non_rep, (float) time_non_rep / 1000.0);
-    printf("Reproducible implementation time: %ld [us] (%.3f [ms])\n", time_rep, (float) time_rep / 1000.0);
-
-    delete[] h_data;
-    delete[] h_indices;
-    delete[] h_ptr;
-    delete[] h_perm;
-    delete[] h_nzcnt;
-    
-    delete[] csr_data;
-    delete[] csr_ptr;
-    delete[] csr_indices;
-
-    delete[] h_Ax_vector_rep;
-    delete[] h_x_vector;
-
-    delete[] entries;
-
-    pb_SwitchToTimer(&timers, pb_TimerID_NONE);
-
-    pb_PrintTimerSet(&timers);
-    pb_FreeParameters(parameters);
 
     return 0;
 }

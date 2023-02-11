@@ -562,7 +562,7 @@ int main(int argc, char *argv[])
 
     cout << "OCL first (dummy) setup time : " << fixed << setprecision(10) << (float) time_first_setup / 1000.0 << endl << endl;
     
-    cout << "The following numbers represent setup and run times for each  run:" << endl;
+    cout << "The following numbers represent setup and run times for each run:" << endl;
     cout << "The first line contains setup times for each run (same for all runs as the setup is shared for each run)." << endl;
     cout << "The second line contains run times for each run." << endl;
 

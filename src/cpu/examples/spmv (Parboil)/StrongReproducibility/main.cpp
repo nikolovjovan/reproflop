@@ -231,9 +231,8 @@ int main (int argc, char** argv)
         h_Ax_vector_omp = new float[dim];
         h_Ax_vector_omp_rep = new float[dim];
 
-
         cout << "\nseq\t";
-        
+
         for (int run = 0; run < 3; ++run) execute (1, false, false, dim, h_nzcnt, h_ptr, h_indices, h_data, h_x_vector, h_perm, h_Ax_vector_seq, time_seq);
         cout << '\n';
         
