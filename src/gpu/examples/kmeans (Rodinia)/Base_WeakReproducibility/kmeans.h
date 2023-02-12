@@ -44,11 +44,13 @@
 #define FLT_MAX 3.40282347e+38
 #endif
 
+#include <cstdint>
+
 /* rmse.c */
 float euclid_dist_2(float *, float *, int);
 int find_nearest_point(float *, int, float **, int);
 float rms_err(float **, int, int, float **, int);
-int cluster(int, int, float **, int, int, float, int *, float ***, float *, int, int);
+int cluster(int, int, float **, int, int, float, int *, float ***, float *, int, int, uint64_t&, uint64_t&);
 int setup(int argc, char **argv);
 int allocate(int npoints, int nfeatures, int nclusters, float **feature);
 void deallocateMemory();

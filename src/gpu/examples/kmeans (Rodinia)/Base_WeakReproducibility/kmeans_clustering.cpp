@@ -174,7 +174,7 @@ float **kmeans_clustering(float **feature, /* in: [npoints][nfeatures] */
 		c++;
 	} while ((delta > threshold) && (loop++ < 500)); /* makes sure loop terminates */
 
-	printf("iterated %d times\n", c);
+	// printf("iterated %d times\n", c);
 
 	free(new_centers[0]);
 	free(new_centers);
