@@ -74,13 +74,18 @@
 #include <omp.h>
 #include "kmeans.h"
 
+#include "LongAccumulator.h"
+
+#include <chrono>
+
+using namespace std;
+
 float min_rmse_ref = FLT_MAX;
 extern double wtime(void);
 /* reference min_rmse value */
 
 /*---< cluster() >-----------------------------------------------------------*/
-int cluster(bool reproducible, /* use reproducible implementation */
-			int npoints,	   /* number of data points */
+int cluster(int npoints,	   /* number of data points */
 			int nfeatures,	   /* number of attributes for each point */
 			float **features,  /* array: [npoints][nfeatures] */
 			int min_nclusters, /* range of min to max number of clusters */
@@ -90,7 +95,9 @@ int cluster(bool reproducible, /* use reproducible implementation */
 			float ***cluster_centres, /* out: [best_nclusters][nfeatures] */
 			float *min_rmse,		  /* out: minimum RMSE */
 			int isRMSE,				  /* calculate RMSE */
-			int nloops)				  /* number of iteration for each number of clusters */
+			int nloops,				  /* number of iteration for each number of clusters */
+			uint64_t &time_setup,	  /* setup time */
+			uint64_t &time_run)		  /* total run time for the sweep and all loops */
 {
 	int nclusters;				 /* number of clusters k */
 	int index = 0;				 /* number of iteration to reach the best RMSE */
@@ -99,8 +106,17 @@ int cluster(bool reproducible, /* use reproducible implementation */
 	float **tmp_cluster_centres; /* hold coordinates of cluster centers */
 	int i;
 
+    chrono::steady_clock::time_point start;
+
 	/* allocate memory for membership */
 	membership = (int *)malloc(npoints * sizeof(int));
+
+	time_setup = 0;
+	time_run = 0;
+
+	start = chrono::steady_clock::now();
+	LongAccumulator::InitializeOpenCL();
+	time_setup += chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
 
 	/* sweep k from min to max_nclusters to find the best number of clusters */
 	for (nclusters = min_nclusters; nclusters <= max_nclusters; nclusters++)
@@ -109,14 +125,16 @@ int cluster(bool reproducible, /* use reproducible implementation */
 			break; /* cannot have more clusters than points */
 
 		/* allocate device memory, invert data array (@ kmeans_cuda.cu) */
+		start = chrono::steady_clock::now();
 		allocate(npoints, nfeatures, nclusters, features);
+		time_setup += chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
 
+		start = chrono::steady_clock::now();
 		/* iterate nloops times for each number of clusters */
 		for (i = 0; i < nloops; i++)
 		{
 			/* initialize initial cluster centers, CUDA calls (@ kmeans_cuda.cu) */
-			tmp_cluster_centres = kmeans_clustering(reproducible,
-													features,
+			tmp_cluster_centres = kmeans_clustering(features,
 													nfeatures,
 													npoints,
 													nclusters,
@@ -149,9 +167,16 @@ int cluster(bool reproducible, /* use reproducible implementation */
 				}
 			}
 		}
+		time_run += chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
 
+		start = chrono::steady_clock::now();
 		deallocateMemory(); /* free device memory (@ kmeans_cuda.cu) */
+		time_setup += chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
 	}
+
+	start = chrono::steady_clock::now();
+	LongAccumulator::CleanupOpenCL();
+	time_setup += chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
 
 	free(membership);
 

@@ -313,7 +313,10 @@ float LongAccumulator::Sum(const int N, float *arr, int *err)
     //
     s_data_arr = clCreateBuffer(s_context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, N * sizeof(cl_float), arr, &ciErrNum);
     if (ciErrNum != CL_SUCCESS) {
-        cerr << "Error in clCreateBuffer for s_data_arr, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        cerr << "Error: " << ciErrNum << " in clCreateBuffer for s_data_arr, Line " << __LINE__ << " in file " << __FILE__ << "!!!\n\n";
+        if (ciErrNum == -61) {
+            cerr << "Attempted allocation size: " << N * sizeof(cl_float) << "B\n";
+        }
         if (err != nullptr) {
             *err = ciErrNum;
         }

@@ -75,8 +75,7 @@
 extern double wtime(void);
 
 /*----< kmeans_clustering() >---------------------------------------------*/
-float **kmeans_clustering(bool reproducible, /* use reproducible implementation */
-						  float **feature, /* in: [npoints][nfeatures] */
+float **kmeans_clustering(float **feature, /* in: [npoints][nfeatures] */
 						  int nfeatures,
 						  int npoints,
 						  int nclusters,
@@ -150,13 +149,6 @@ float **kmeans_clustering(bool reproducible, /* use reproducible implementation 
 	for (i = 1; i < nclusters; i++)
 		new_centers[i] = new_centers[i - 1] + nfeatures;
 
-    if (reproducible) {
-        /* allocate space for temporary feature array */
-        new_features = (float *) malloc(npoints * sizeof(float));
-    }
-
-	LongAccumulator::InitializeOpenCL();
-
 	/* iterate until convergence */
 	do
 	{
@@ -177,34 +169,57 @@ float **kmeans_clustering(bool reproducible, /* use reproducible implementation 
 				delta++;
 				membership[i] = new_membership[i];
 			}
+		}
 
-			if (!reproducible)
+		for (index = 0; index < nclusters; index++)
+		{
+			if (new_centers_len[index] == 0)
 			{
 				for (j = 0; j < nfeatures; j++)
 				{
-					new_centers[cluster_id][j] += feature[i][j];
+					new_centers[index][j] = 0.0f;
 				}
 			}
-		}
-
-		if (reproducible)
-		{
-			for (index = 0; index < nclusters; index++)
+			else if (new_centers_len[index] == 1)
 			{
+				for (i = 0; i < npoints; i++)
+				{
+					if (membership[i] == index)
+					{ // point i belongs to cluster index
+						for (j = 0; j < nfeatures; j++)
+						{
+							new_centers[index][j] = feature[i][j];
+						}
+						break;
+					}
+				}
+			}
+			else
+			{
+				/* allocate space for temporary feature array */
+				new_features = (float *) malloc(new_centers_len[index] * nfeatures * sizeof(float));
+				
+				n = 0; // number of features in current new_features array (goes to new_centers_len[index])
+				for (i = 0; i < npoints; i++)
+				{
+					if (membership[i] == index)
+					{ // point i belongs to cluster index
+						for (j = 0; j < nfeatures; j++)
+						{
+							new_features[j * new_centers_len[index] + n] = feature[i][j];
+						}
+						++n;
+					}
+				}
+
 				/* update new cluster centers : sum of objects located within */
 				for (j = 0; j < nfeatures; j++)
 				{
-					n = 0; // number of features in current new_features array (goes to new_centers_len[index])
-					for (i = 0; i < npoints; i++)
-					{
-						if (membership[i] == index)
-						{ // point i belongs to cluster index
-							new_features[n++] = feature[i][j];
-						}
-					}
 					// printf("LongAccumulator run\n");
-					new_centers[index][j] = LongAccumulator::Sum(new_centers_len[index], new_features);
+					new_centers[index][j] = LongAccumulator::Sum(new_centers_len[index], &(new_features[j * new_centers_len[index]]));
 				}
+
+				free(new_features);
 			}
 		}
 
@@ -224,13 +239,7 @@ float **kmeans_clustering(bool reproducible, /* use reproducible implementation 
 		c++;
 	} while ((delta > threshold) && (loop++ < 500)); /* makes sure loop terminates */
 
-	printf("iterated %d times\n", c);
-
-	LongAccumulator::CleanupOpenCL();
-
-    if (reproducible) {
-        free(new_features);
-    }
+	// printf("iterated %d times\n", c);
 
 	free(new_centers[0]);
 	free(new_centers);
