@@ -22,6 +22,8 @@
 
 #define PI 3.14159265359
 
+constexpr double MAX_MEM_USAGE_PERCENT = 0.8;
+
 float kernel_value_CPU(float v)
 {
     float rValue = 0;
@@ -119,11 +121,9 @@ float kernel_value_LUT(float v, float *LUT, int sizeLUT, float _1overCutoff2)
     return LUT[k0] + ((v - v0) * (LUT[k0 + 1] - LUT[k0]) / _1overCutoff2);
 }
 
-void gridding_seq(unsigned int n, parameters params, ReconstructionSample *sample, float *LUT, unsigned int sizeLUT,
-                  cmplx *gridData, float *sampleDensity, bool reproducible, double *time)
+void gridding_seq(bool reproducible, unsigned int n, parameters params, ReconstructionSample *sample, float *LUT,
+                  unsigned int sizeLUT, cmplx *gridData, float *sampleDensity)
 {
-    printf("Sequential (gold) implementation: %s!\n", reproducible ? "reproducible" : "non-reproducible");
-
     unsigned int NxL, NxH;
     unsigned int NyL, NyH;
     unsigned int NzL, NzH;
@@ -156,8 +156,6 @@ void gridding_seq(unsigned int n, parameters params, ReconstructionSample *sampl
     float cutoff = ((float) (params.kernelWidth)) / 2.0; // cutoff radius
     float cutoff2 = cutoff * cutoff;                     // square of cutoff radius
     float _1overCutoff2 = 1 / cutoff2;                   // 1 over square of cutoff radius
-
-    double tstart = omp_get_wtime();
 
     float beta = PI * sqrt(4 * params.kernelWidth * params.kernelWidth / (params.oversample * params.oversample) * (params.oversample - .5) * (params.oversample - .5) - .8);
 
@@ -257,8 +255,6 @@ void gridding_seq(unsigned int n, parameters params, ReconstructionSample *sampl
         }
     }
 
-    *time = omp_get_wtime() - tstart;
-
     if (reproducible) {
         /* convert temp data to output data */
         for (i = 0; i < gridNumElems; ++i) {
@@ -280,15 +276,31 @@ void gridding_seq(unsigned int n, parameters params, ReconstructionSample *sampl
  * solution. Regarding numerical reproducibility, this solution exibits weak reproducibility, i.e. for same thread
  * count it returns the same result every time. However, the returned result may not be accurate.
  */
-void gridding_omp_mem(unsigned int n, parameters params, ReconstructionSample *sample, float *LUT, unsigned int sizeLUT,
-                      cmplx *gridData, float *sampleDensity, bool reproducible, double *time)
+void gridding_omp_mem(bool reproducible, unsigned int n, parameters params, ReconstructionSample *sample, float *LUT,
+                      unsigned int sizeLUT, cmplx *gridData, float *sampleDensity)
 {
-    printf("Parallel implementation using thread-local output buffers: %s!\n", reproducible ? "reproducible" : "non-reproducible");
-
-    int numThreads = omp_get_max_threads();
+    uint64_t numThreads = omp_get_max_threads();
 
     if (numThreads == 1) {
-        gridding_seq(n, params, sample, LUT, sizeLUT, gridData, sampleDensity, reproducible, time);
+        gridding_seq(reproducible, n, params, sample, LUT, sizeLUT, gridData, sampleDensity);
+        return;
+    }
+    
+    uint64_t gridNumElems = params.gridSize[0] * params.gridSize[1] * params.gridSize[2];
+
+    struct sysinfo memInfo;
+    sysinfo(&memInfo);
+    uint64_t totalMemSize = memInfo.totalram;
+    uint64_t requiredMemSize;
+
+    if (reproducible) {
+        requiredMemSize = numThreads * gridNumElems * sizeof(LongAccumulator) * 2 + gridNumElems * (sizeof(cmplx) + sizeof(float));
+    } else {
+        requiredMemSize = numThreads * gridNumElems * (sizeof(cmplx) + sizeof(float));
+    }
+    
+    if (requiredMemSize > totalMemSize * MAX_MEM_USAGE_PERCENT) {
+        printf("Not enough memory to allocate thread-local copies of output arrays. Available memory: %llu. Required memory: %llu. Aborting.\n", totalMemSize, requiredMemSize);
         return;
     }
 
@@ -338,8 +350,6 @@ void gridding_omp_mem(unsigned int n, parameters params, ReconstructionSample *s
     int start;
     int end;
 
-    int gridNumElems = size_x * size_y * size_z;
-
     cmplx **tGridData;
     float **tSampleDensity;
 
@@ -376,8 +386,6 @@ void gridding_omp_mem(unsigned int n, parameters params, ReconstructionSample *s
     for (i = 1; i < numThreads; ++i) {
         tSampleDensity[i] = (float *) calloc(gridNumElems, sizeof(float));
     }
-
-    double tstart = omp_get_wtime();
 
 #pragma omp parallel default(none) \
         private(i, tid, pt, NxL, NxH, NyL, NyH, NzL, NzH, nx, ny, nz, w, idx, idx0, idxZ, idxY, Dx2, Dy2, Dz2, dx2, dy2, dz2, dy2dz2, v, start, end) \
@@ -467,8 +475,6 @@ void gridding_omp_mem(unsigned int n, parameters params, ReconstructionSample *s
     }
 }
 
-    *time = omp_get_wtime() - tstart;
-
     /* parallel reduction, thread with id 0 uses function output buffers */
 
     chunkSize = (gridNumElems + numThreads - 1) / numThreads;
@@ -528,15 +534,13 @@ constexpr int MAX_LOCK_COUNT = 10000;
  * can only incur more performance penalty. Due to the nature of locks and thread contention, this solution is not
  * reproducible and multiple runs with same thread count do not guarantee numerical reproducibility.
  */
-void gridding_omp_locks(unsigned int n, parameters params, ReconstructionSample *sample, float *LUT, unsigned int sizeLUT,
-                        cmplx *gridData, float *sampleDensity, bool reproducible, double *time)
+void gridding_omp_locks(bool reproducible, unsigned int n, parameters params, ReconstructionSample *sample, float *LUT,
+                        unsigned int sizeLUT, cmplx *gridData, float *sampleDensity)
 {
-    printf("Parallel implementation using locks: %s!\n", reproducible ? "reproducible" : "non-reproducible");
-
     int numThreads = omp_get_max_threads();
 
     if (numThreads == 1) {
-        gridding_seq(n, params, sample, LUT, sizeLUT, gridData, sampleDensity, reproducible, time);
+        gridding_seq(reproducible, n, params, sample, LUT, sizeLUT, gridData, sampleDensity);
         return;
     }
 
@@ -604,8 +608,6 @@ void gridding_omp_locks(unsigned int n, parameters params, ReconstructionSample 
         gridDataRealAcc = new LongAccumulator[gridNumElems]();
         gridDataImagAcc = new LongAccumulator[gridNumElems]();
     }
-
-    double tstart = omp_get_wtime();
 
 #pragma omp parallel for default(none) \
             private(i, pt, NxL, NxH, NyL, NyH, NzL, NzH, nx, ny, nz, w, tempGridDataReal, tempGridDataImag, idx, idx0, idxZ, idxY, Dx2, Dy2, Dz2, dx2, dy2, dz2, dy2dz2, v) \
@@ -699,8 +701,6 @@ void gridding_omp_locks(unsigned int n, parameters params, ReconstructionSample 
         }
     }
 
-    *time = omp_get_wtime() - tstart;
-
     if (reproducible) {
         /* convert temp data to output data */
         for (i = 0; i < gridNumElems; ++i) {
@@ -718,32 +718,4 @@ void gridding_omp_locks(unsigned int n, parameters params, ReconstructionSample 
         omp_destroy_lock(&locks[i]);
     }
     free(locks);
-}
-
-constexpr double MAX_MEM_USAGE_PERCENT = 0.8;
-
-void gridding_omp(unsigned int n, parameters params, ReconstructionSample *sample, float *LUT, unsigned int sizeLUT,
-                  cmplx *gridData, float *sampleDensity, bool reproducible, double *time)
-{
-    uint64_t gridNumElems = params.gridSize[0] * params.gridSize[1] * params.gridSize[2];
-    uint64_t numThreads = omp_get_max_threads();
-
-    struct sysinfo memInfo;
-    sysinfo(&memInfo);
-    uint64_t totalMemSize = memInfo.totalram;
-    uint64_t requiredMemSize;
-    if (reproducible) {
-        requiredMemSize = numThreads * gridNumElems * sizeof(LongAccumulator) * 2 + gridNumElems * (sizeof(cmplx) + sizeof(float));
-    } else {
-        requiredMemSize = numThreads * gridNumElems * (sizeof(cmplx) + sizeof(float));
-    }
-
-    printf("Available memory: %llu; Required memory: %llu\n", totalMemSize, requiredMemSize);
-
-    /* depending on required memory, use locks or thread-local memory implementation */
-    if (requiredMemSize > totalMemSize * MAX_MEM_USAGE_PERCENT) {
-        gridding_omp_locks(n, params, sample, LUT, sizeLUT, gridData, sampleDensity, reproducible, time);
-    } else {
-        gridding_omp_mem(n, params, sample, LUT, sizeLUT, gridData, sampleDensity, reproducible, time);
-    }
 }
