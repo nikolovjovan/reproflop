@@ -35,7 +35,6 @@
  * gridding.
  ***********************************************************************/
 void OpenCL_interface(
-    struct pb_TimerSet *timers,
     unsigned int n,               // Number of input elements
     parameters params,            // Parameter struct which defines output gridSize, cutoff distance, etc.
     ReconstructionSample *sample, // Array of input elements
@@ -100,8 +99,6 @@ void OpenCL_interface(
     cl_kernel gridding_GPU;
 
     /* Allocating device memory */
-    pb_SwitchToTimer(timers, pb_TimerID_COPY);
-
     unsigned int *zeroData = NULL, *maxIntData = NULL;
 
     size_t sizeZeroData = sizeof(float) * 2 * gridNumElems;
@@ -150,8 +147,6 @@ void OpenCL_interface(
 
     idxKey_dPtr = &idxKey_d;
     idxValue_dPtr = &idxValue_d;
-
-    pb_SwitchToTimer(timers, pb_TimerID_DRIVER);
 
     char compileOptions[1024];
     //                -cl-nv-verbose // Provides register info for NVIDIA devices
@@ -208,11 +203,7 @@ void OpenCL_interface(
     gridding_GPU = clCreateKernel(gpu_kernels, "gridding_GPU", &ciErrNum);
     OCL_ERRCK_VAR(ciErrNum);
 
-    pb_SwitchToTimer(timers, pb_TimerID_COPY);
-
     free(maxIntData);
-
-    pb_SwitchToTimer(timers, pb_TimerID_DRIVER);
 
     size_t block1[1] = {blockSize};
     size_t grid1[1] = {((n + blockSize - 1) / blockSize) * block1[0]};
@@ -228,8 +219,6 @@ void OpenCL_interface(
     OCL_ERRCK_RETVAL(clSetKernelArg(reorder_kernel, 0, sizeof(unsigned int), &n));
     OCL_ERRCK_RETVAL(clSetKernelArg(reorder_kernel, 2, sizeof(cl_mem), (void *)&sample_d));
     OCL_ERRCK_RETVAL(clSetKernelArg(reorder_kernel, 3, sizeof(cl_mem), (void *)&sortedSample_d));
-
-    pb_SwitchToTimer(timers, pb_TimerID_KERNEL);
 
     /* STEP 1: Perform binning. This kernel determines which output bin each input element
      * goes into. Any excess (beyond binsize) is put in the CPU bin
@@ -262,21 +251,15 @@ void OpenCL_interface(
     OCL_ERRCK_RETVAL(clEnqueueNDRangeKernel(clCommandQueue, reorder_kernel, 1, 0,
                                             grid1, block1, 0, 0, 0));
 
-    pb_SwitchToTimer(timers, pb_TimerID_COPY);
-
     OCL_ERRCK_RETVAL(clReleaseMemObject(*idxValue_dPtr));
     OCL_ERRCK_RETVAL(clReleaseMemObject(*idxKey_dPtr));
     OCL_ERRCK_RETVAL(clReleaseMemObject(sample_d));
-
-    pb_SwitchToTimer(timers, pb_TimerID_KERNEL);
 
     /* STEP 4: In this step we generate the ADD scan of the array of starting indices
      * of the output bins. The result is an array that contains the starting address of
      * every output bin.
      */
     scanLargeArray(gridNumElems + 1, binStartAddr_d, clContext, clCommandQueue, clDevice, workItemSizes);
-
-    pb_SwitchToTimer(timers, pb_TimerID_COPY);
 
     // Copy back to the CPU the indices of the input elements that will be processed on the CPU
     unsigned int cpuStart;
@@ -314,8 +297,6 @@ void OpenCL_interface(
 
     free(zeroData);
 
-    pb_SwitchToTimer(timers, pb_TimerID_KERNEL);
-
     size_t block2[3] = {dims[0], dims[1], dims[2]};
     size_t grid2[3] = {(size_x / dims[0]) * block2[0], ((size_y * size_z) / (dims[1] * dims[2])) * block2[1], 1 * block2[2]};
 
@@ -330,8 +311,6 @@ void OpenCL_interface(
 
     OCL_ERRCK_RETVAL(clReleaseMemObject(binStartAddr_d));
 
-    pb_SwitchToTimer(timers, pb_TimerID_COPY);
-
     /* Copying the results from the Device to the Host */
     OCL_ERRCK_RETVAL(clEnqueueReadBuffer(clCommandQueue, sampleDensity_d, CL_FALSE,
                                          0,                            // Offset in bytes
@@ -345,22 +324,16 @@ void OpenCL_interface(
                                          gridData,                     // Host Source
                                          0, NULL, NULL));
 
-    pb_SwitchToTimer(timers, pb_TimerID_COMPUTE);
-
     /* STEP 6: Computing the contributions of the sample points handled by the Host
      * and adding those to the GPU results.
      */
     gridding_Gold(CPUbin_size, params, CPUbin, LUT, sizeLUT, gridData, sampleDensity);
-
-    pb_SwitchToTimer(timers, pb_TimerID_COPY);
 
     free(CPUbin);
 
     OCL_ERRCK_RETVAL(clReleaseMemObject(gridData_d));
     OCL_ERRCK_RETVAL(clReleaseMemObject(sampleDensity_d));
     OCL_ERRCK_RETVAL(clReleaseMemObject(sortedSample_d));
-
-    pb_SwitchToTimer(timers, pb_TimerID_NONE);
 
     return;
 }

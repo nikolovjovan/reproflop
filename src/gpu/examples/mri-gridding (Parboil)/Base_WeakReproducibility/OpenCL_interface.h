@@ -9,7 +9,6 @@
 #include <CL/cl.h>
 
 void OpenCL_interface(
-    struct pb_TimerSet *timers,
     unsigned int n,               // Number of input elements
     parameters params,            // Parameter struct which defines output gridSize, cutoff distance, etc.
     ReconstructionSample *sample, // Array of input elements

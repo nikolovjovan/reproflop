@@ -31,6 +31,11 @@ constexpr uint32_t DEFAULT_NUMBER_OF_RUNS = 50;
 
 constexpr char* input_files[] = { "bcsstk32.mtx", "fidapm05.mtx", "jgl009.mtx" };
 
+constexpr int IGNORE = 0;
+constexpr int SUM = 1;
+constexpr int DOT_PRODUCT = 2;
+constexpr int SPMV = 3;
+
 int len = 1;
 int depth = 1;
 int dim = 1;
@@ -277,7 +282,7 @@ void spmv_reproducible_spmv(int dim, int *csr_ptr, int *csr_indices, float *csr_
     LongAccumulator::SparseMatrixDenseVectorProduct(dim, csr_data, csr_indices, csr_ptr, h_x_vector, h_Ax_vector);
 }
 
-void execute(bool reproducible, int dim, int *h_nzcnt, int *h_ptr, int *h_indices, float *h_data,
+void execute(bool reproducible, int algorithm, int dim, int *h_nzcnt, int *h_ptr, int *h_indices, float *h_data,
              float *h_x_vector, int *h_perm, float *h_Ax_vector,
              uint64_t &time_setup, uint64_t &time_run)
 {
@@ -293,7 +298,13 @@ void execute(bool reproducible, int dim, int *h_nzcnt, int *h_ptr, int *h_indice
 
     start = chrono::steady_clock::now();
     if (reproducible) {
-        spmv_reproducible_spmv(dim, h_ptr, h_indices, h_data, h_x_vector, h_Ax_vector);
+        if (algorithm == SUM) {
+            spmv_reproducible_sum(dim, h_nzcnt, h_ptr, h_indices, h_data, h_x_vector, h_perm, h_Ax_vector);
+        } else if (algorithm == DOT_PRODUCT) {
+            spmv_reproducible_dot(dim, h_ptr, h_indices, h_data, h_x_vector, h_Ax_vector);
+        } else {
+            spmv_reproducible_spmv(dim, h_ptr, h_indices, h_data, h_x_vector, h_Ax_vector);
+        }
     } else {
         spmv_ocl(dim, h_nzcnt, h_ptr, h_indices, h_data, h_x_vector, h_perm, h_Ax_vector);
     }
@@ -410,7 +421,7 @@ int main(int argc, char **argv)
 
         cout << "\nnon-reproducible\n\n";
 
-        for (int run = 0; run < 3; ++run) execute(false, dim, h_nzcnt, h_ptr, h_indices, h_data, h_x_vector, h_perm, h_Ax_vector, time_setup[run], time_run[run]);
+        for (int run = 0; run < 3; ++run) execute(false, IGNORE, dim, h_nzcnt, h_ptr, h_indices, h_data, h_x_vector, h_perm, h_Ax_vector, time_setup[run], time_run[run]);
 
         for (int run = 0; run < 3; ++run) {
             cout << fixed << setprecision(10) << (float) time_setup[run] / 1000.0 << (run < 2 ? '\t' : '\n');
@@ -419,9 +430,49 @@ int main(int argc, char **argv)
             cout << fixed << setprecision(10) << (float) time_run[run] / 1000.0 << (run < 2 ? '\t' : '\n');
         }
 
-        cout << "\nreproducible\n\n";
+        delete[] h_data;
+        delete[] h_indices;
+        delete[] h_ptr;
+        delete[] h_perm;
+        delete[] h_nzcnt;
 
-        for (int run = 0; run < 3; ++run) execute(true, dim, nullptr, csr_ptr, csr_indices, csr_data, h_x_vector, nullptr, h_Ax_vector_rep, time_setup_rep[run], time_run_rep[run]);
+        coo_to_jds(
+            rows,
+            cols,
+            nz,
+            entries,
+            1,          // row padding
+            1,          // warp size
+            1,          // pack size
+            0,          // debug level [0:2]
+            &h_data, &h_ptr, &h_nzcnt, &h_indices, &h_perm,
+            &col_count, &len, &nzcnt_len, &depth);
+
+        cout << "\nreproducible (sum)\n\n";
+
+        for (int run = 0; run < 3; ++run) execute(true, SUM, dim, h_nzcnt, h_ptr, h_indices, h_data, h_x_vector, h_perm, h_Ax_vector_rep, time_setup_rep[run], time_run_rep[run]);
+
+        for (int run = 0; run < 3; ++run) {
+            cout << fixed << setprecision(10) << (float) time_setup_rep[run] / 1000.0 << (run < 2 ? '\t' : '\n');
+        }
+        for (int run = 0; run < 3; ++run) {
+            cout << fixed << setprecision(10) << (float) time_run_rep[run] / 1000.0 << (run < 2 ? '\t' : '\n');
+        }
+
+        cout << "\nreproducible (dot product)\n\n";
+
+        for (int run = 0; run < 3; ++run) execute(true, DOT_PRODUCT, dim, nullptr, csr_ptr, csr_indices, csr_data, h_x_vector, nullptr, h_Ax_vector_rep, time_setup_rep[run], time_run_rep[run]);
+
+        for (int run = 0; run < 3; ++run) {
+            cout << fixed << setprecision(10) << (float) time_setup_rep[run] / 1000.0 << (run < 2 ? '\t' : '\n');
+        }
+        for (int run = 0; run < 3; ++run) {
+            cout << fixed << setprecision(10) << (float) time_run_rep[run] / 1000.0 << (run < 2 ? '\t' : '\n');
+        }
+
+        cout << "\nreproducible (spmv)\n\n";
+
+        for (int run = 0; run < 3; ++run) execute(true, SPMV, dim, nullptr, csr_ptr, csr_indices, csr_data, h_x_vector, nullptr, h_Ax_vector_rep, time_setup_rep[run], time_run_rep[run]);
 
         for (int run = 0; run < 3; ++run) {
             cout << fixed << setprecision(10) << (float) time_setup_rep[run] / 1000.0 << (run < 2 ? '\t' : '\n');

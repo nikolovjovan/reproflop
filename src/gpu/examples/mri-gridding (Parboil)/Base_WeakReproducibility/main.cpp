@@ -20,6 +20,14 @@
 
 #define PI 3.14159265
 
+#include <chrono>
+#include <iostream>
+#include <iomanip>
+
+using namespace std;
+
+constexpr char* input_files[] = { "small/small.uks" };
+
 /************************************************************
  * This function reads the parameters from the file provided
  * as a comman line argument.
@@ -47,23 +55,13 @@ void setParameters(FILE *file, parameters *p)
         exit(1);
     }
     cl_ulong mem_size;
-    clGetDeviceInfo(clDevice, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(mem_size), &mem_size, NULL);
+    clGetDeviceInfo(clDevice, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(mem_size), &mem_size, nullptr);
 
-    printf("  Number of samples = %d\n", p->numSamples);
-    printf("  Total amount of GPU memory: %llu bytes\n", (unsigned long long)mem_size);
     if (p->numSamples > 10000000 && mem_size / 1024 / 1024 < 3000)
     {
         printf("  Need at least 3GB of GPU memory for large dataset\n");
         exit(1);
     }
-    printf("  Grid Size = %dx%dx%d\n", p->gridSize[0], p->gridSize[1], p->gridSize[2]);
-    printf("  Input Matrix Size = %dx%dx%d\n", p->aquisitionMatrixSize[0], p->aquisitionMatrixSize[1], p->aquisitionMatrixSize[2]);
-    printf("  Recon Matrix Size = %dx%dx%d\n", p->reconstructionMatrixSize[0], p->reconstructionMatrixSize[1], p->reconstructionMatrixSize[2]);
-    printf("  Kernel Width = %f\n", p->kernelWidth);
-    printf("  KMax = %.2f %.2f %.2f\n", p->kMax[0], p->kMax[1], p->kMax[2]);
-    printf("  Oversampling = %f\n", p->oversample);
-    printf("  GPU Binsize = %d\n", p->binsize);
-    printf("  Use LUT = %s\n", (p->useLUT) ? "Yes" : "No");
 }
 
 /************************************************************
@@ -115,57 +113,11 @@ unsigned int readSampleData(parameters params, FILE *uksdata_f, ReconstructionSa
 
 int main(int argc, char *argv[])
 {
-    struct pb_Parameters *prms;
-    struct pb_TimerSet timers;
-
-    prms = pb_ReadParameters(&argc, argv);
-    pb_InitializeTimerSet(&timers);
-
-    pb_SwitchToTimer(&timers, pb_TimerID_NONE);
-
-    char uksdata[250];
     parameters params;
-
-    FILE *uksfile_f = NULL;
-    FILE *uksdata_f = NULL;
-
-    strcpy(uksdata, prms->inpFiles[0]);
-    strcat(uksdata, ".data");
-
-    uksfile_f = fopen(prms->inpFiles[0], "r");
-    if (uksfile_f == NULL)
-    {
-        printf("ERROR: Could not open %s\n", prms->inpFiles[0]);
-        exit(1);
-    }
-
-    printf("\nReading parameters\n");
-
-    if (argc >= 2)
-    {
-        params.binsize = atoi(argv[1]);
-    }
-    else
-    { // default binsize value;
-        params.binsize = 128;
-    }
-
-    setParameters(uksfile_f, &params);
-
-    pb_SwitchToTimer(&timers, pb_TimerID_IO);
-
     ReconstructionSample *samples; // Input Data
-    //  cl_mem samplesPin;
-    float *LUT;           // use look-up table for faster execution on CPU (intermediate data)
-    unsigned int sizeLUT; // set in the function calculateLUT (intermediate data)
-
-    cmplx *gridData;      // Output Data
-    float *sampleDensity; // Output Data
-    //  cl_mem gridDataPin;
-    //  cl_mem sampleDensityPin;
-
-    cmplx *gridData_gold;      // Gold Output Data
-    float *sampleDensity_gold; // Gold Output Data
+    unsigned int number_of_samples;
+    
+    chrono::steady_clock::time_point start;
 
     cl_int ciErrNum;
     cl_platform_id clPlatform;
@@ -180,200 +132,145 @@ int main(int argc, char *argv[])
     size_t global_mem_size = 0;
     (void)clGetDeviceInfo(clDevice, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(size_t), &global_mem_size, 0);
 
-    size_t samples_size = params.numSamples * sizeof(ReconstructionSample);
-    int gridNumElems = params.gridSize[0] * params.gridSize[1] * params.gridSize[2];
-    size_t output_size = gridNumElems * sizeof(cmplx);
+    const int exe_path_len = strrchr(argv[0], '/') - argv[0] + 1;
+    char exe_path[256];
+    strncpy(exe_path, argv[0], exe_path_len);
+    exe_path[exe_path_len] = '\0';
 
-    if ((deviceFound < 0) ||
-        ((samples_size + output_size) > global_mem_size) ||
-        (samples_size > max_alloc_size) ||
-        (output_size > max_alloc_size))
+    char uksfile[256];
+    char uksdata[256];
+
+    float *LUT;           // use look-up table for faster execution on CPU (intermediate data)
+    unsigned int sizeLUT; // set in the function calculateLUT (intermediate data)
+
+    cmplx *gridData;      // Output Data
+    float *sampleDensity; // Output Data
+    int gridNumElems;
+
+    cout << "unit: [ms]\n\n";
+
+    int nfiles = sizeof(input_files) / sizeof(input_files[0]);
+
+    for (int file_idx = 0; file_idx < nfiles; ++file_idx)
     {
-        fprintf(stderr, "No suitable device was found\n");
-        if (deviceFound >= 0)
+        strncpy(uksfile, exe_path, exe_path_len + 1);
+        strcat(uksfile, "data/");
+        strcat(uksfile, input_files[file_idx]);
+
+        cout << input_files[file_idx] << "\n";
+
         {
-            fprintf(stderr, "Memory requirements for this dataset exceed device capabilities\n");
+            FILE *uksfile_f = nullptr;
+            FILE *uksdata_f = nullptr;
+
+            strcpy(uksdata, uksfile);
+            strcat(uksdata, ".data");
+
+            uksfile_f = fopen(uksfile, "r");
+            if (uksfile_f == nullptr)
+            {
+                printf("ERROR: Could not open %s\n", uksfile);
+                exit(1);
+            }
+
+            setParameters(uksfile_f, &params);
+            params.binsize = 32; // default binsize
+
+            gridNumElems = params.gridSize[0] * params.gridSize[1] * params.gridSize[2];
+
+            size_t samples_size = params.numSamples * sizeof(ReconstructionSample);
+            size_t output_size = gridNumElems * sizeof(cmplx);
+
+            // Check max device memory size.
+            //
+            if ((deviceFound < 0) ||
+                ((samples_size + output_size) > global_mem_size) ||
+                (samples_size > max_alloc_size) ||
+                (output_size > max_alloc_size))
+            {
+                fprintf(stderr, "No suitable device was found\n");
+                if (deviceFound >= 0)
+                {
+                    fprintf(stderr, "Memory requirements for this dataset exceed device capabilities\n");
+                }
+                exit(1);
+            }
+
+            samples = (ReconstructionSample *)malloc(params.numSamples * sizeof(ReconstructionSample));
+
+            if (samples == nullptr)
+            {
+                printf("ERROR: Unable to allocate and map memory for input data\n");
+                exit(1);
+            }
+
+            uksdata_f = fopen(uksdata, "rb");
+
+            if (uksdata_f == nullptr)
+            {
+                printf("ERROR: Could not open data file\n");
+                exit(1);
+            }
+
+            number_of_samples = readSampleData(params, uksdata_f, samples);
+            fclose(uksdata_f);
         }
-        exit(1);
-    }
 
-    cl_context_properties cps[3] = {CL_CONTEXT_PLATFORM, (cl_context_properties)clPlatform, 0};
-    clContext = clCreateContextFromType(cps, deviceType, NULL, NULL, &ciErrNum);
-    OCL_ERRCK_VAR(ciErrNum);
-
-    cl_command_queue clCommandQueue = clCreateCommandQueue(clContext, clDevice, CL_QUEUE_PROFILING_ENABLE, &ciErrNum);
-    OCL_ERRCK_VAR(ciErrNum);
-
-    cl_uint workItemDimensions;
-    OCL_ERRCK_RETVAL(clGetDeviceInfo(clDevice, CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS, sizeof(cl_uint), &workItemDimensions, NULL));
-
-    size_t workItemSizes[workItemDimensions];
-    OCL_ERRCK_RETVAL(clGetDeviceInfo(clDevice, CL_DEVICE_MAX_WORK_ITEM_SIZES, workItemDimensions * sizeof(size_t), workItemSizes, NULL));
-
-    pb_SetOpenCL(&clContext, &clCommandQueue);
-
-    /*
-  samplesPin = clCreateBuffer(clContext, CL_MEM_ALLOC_HOST_PTR,
-      params.numSamples*sizeof(ReconstructionSample),
-      NULL, &ciErrNum);
-*/
-    samples = (ReconstructionSample *)malloc(params.numSamples * sizeof(ReconstructionSample));
-
-    /*(ReconstructionSample *) clEnqueueMapBuffer(clCommandQueue, samplesPin, CL_TRUE, CL_MAP_WRITE, 0, params.numSamples*sizeof(ReconstructionSample), 0, NULL, NULL, &ciErrNum);
-    OCL_ERRCK_VAR(ciErrNum);
-  */
-    if (samples == NULL)
-    {
-        printf("ERROR: Unable to allocate and map memory for input data\n");
-        exit(1);
-    }
-
-    uksdata_f = fopen(uksdata, "rb");
-
-    if (uksdata_f == NULL)
-    {
-        printf("ERROR: Could not open data file\n");
-        exit(1);
-    }
-
-    printf("Reading input data from files\n");
-
-    unsigned int n = readSampleData(params, uksdata_f, samples);
-    fclose(uksdata_f);
-
-    if (params.useLUT)
-    {
-        printf("Generating Look-Up Table\n");
-        float beta = PI * sqrt(4 * params.kernelWidth * params.kernelWidth / (params.oversample * params.oversample) * (params.oversample - .5) * (params.oversample - .5) - .8);
-        calculateLUT(beta, params.kernelWidth, &LUT, &sizeLUT);
-    }
-
-    pb_SwitchToTimer(&timers, pb_TimerID_NONE);
-
-    gridData_gold = (cmplx *)calloc(gridNumElems, sizeof(cmplx));
-    sampleDensity_gold = (float *)calloc(gridNumElems, sizeof(float));
-    if (sampleDensity_gold == NULL || gridData_gold == NULL)
-    {
-        printf("ERROR: Unable to allocate memory for output data\n");
-        exit(1);
-    }
-
-    printf("Running gold version\n");
-
-    gridding_Gold(n, params, samples, LUT, sizeLUT, gridData_gold, sampleDensity_gold);
-
-    printf("Running OpenCL version\n");
-
-    pb_SwitchToTimer(&timers, pb_TimerID_COPY);
-
-    /*
-      OCL_ERRCK_RETVAL( clEnqueueWriteBuffer(clCommandQueue, samplesPin, CL_TRUE,
-                              0, // Offset in bytes
-                              n*sizeof(ReconstructionSample), // Size of data to write
-                              samples, // Host Source
-
-                              0, NULL, NULL) );*/
-    // OCL_ERRCK_RETVAL ( clFinish(clCommandQueue) );
-
-    /*
-     gridDataPin = clCreateBuffer(clContext, CL_MEM_ALLOC_HOST_PTR,
-         gridNumElems*sizeof(cmplx), NULL, &ciErrNum);
-     OCL_ERRCK_VAR(ciErrNum);
-     */
-    gridData = (cmplx *)malloc(gridNumElems * sizeof(cmplx));
-    if (gridData == NULL)
-    {
-        fprintf(stderr, "Could not allocate memory on host! (%s: %d)\n", __FILE__, __LINE__);
-        exit(1);
-    }
-
-    /*(cmplx *) clEnqueueMapBuffer(clCommandQueue, gridDataPin, CL_TRUE, CL_MAP_READ, 0, gridNumElems*sizeof(cmplx), 0, NULL, NULL, &ciErrNum);
-    OCL_ERRCK_VAR(ciErrNum);
-    */
-
-    /*
-    sampleDensityPin = clCreateBuffer(clContext, CL_MEM_ALLOC_HOST_PTR,
-        gridNumElems*sizeof(float), NULL, &ciErrNum);
-    OCL_ERRCK_VAR(ciErrNum);
-    */
-
-    sampleDensity = (float *)malloc(gridNumElems * sizeof(float));
-    if (sampleDensity == NULL)
-    {
-        fprintf(stderr, "Could not allocate memory on host! (%s: %d)\n", __FILE__, __LINE__);
-        exit(1);
-    }
-
-    /*(float *) clEnqueueMapBuffer(clCommandQueue, sampleDensityPin, CL_TRUE, CL_MAP_READ, 0, gridNumElems*sizeof(float), 0, NULL, NULL, &ciErrNum);
-     */
-
-    OCL_ERRCK_VAR(ciErrNum);
-    OCL_ERRCK_VAR(ciErrNum);
-
-    if (sampleDensity == NULL || gridData == NULL)
-    {
-        printf("ERROR: Unable to allocate memory for output data\n");
-        exit(1);
-    }
-
-    pb_SwitchToTimer(&timers, pb_TimerID_COMPUTE);
-
-    // Interface function to GPU implementation of gridding
-    OpenCL_interface(&timers, n, params, samples, LUT, sizeLUT, gridData, sampleDensity, clContext, clCommandQueue, clDevice, workItemSizes);
-
-    pb_SwitchToTimer(&timers, pb_TimerID_NONE);
-
-    int passed = 1;
-    for (int i = 0; i < gridNumElems; i++)
-    {
-        if (sampleDensity[i] != sampleDensity_gold[i])
+        for (int run = 0; run < 3; ++run)
         {
-            passed = 0;
-            break;
+            start = chrono::steady_clock::now();
+            if (params.useLUT)
+            {
+                float beta = PI * sqrt(4 * params.kernelWidth * params.kernelWidth / (params.oversample * params.oversample) * (params.oversample - .5) * (params.oversample - .5) - .8);
+                calculateLUT(beta, params.kernelWidth, &LUT, &sizeLUT);
+            }
+
+            gridData = (cmplx *)malloc(gridNumElems * sizeof(cmplx));
+            if (gridData == nullptr)
+            {
+                fprintf(stderr, "Could not allocate memory on host! (%s: %d)\n", __FILE__, __LINE__);
+                exit(1);
+            }
+
+            sampleDensity = (float *)malloc(gridNumElems * sizeof(float));
+            if (sampleDensity == nullptr)
+            {
+                fprintf(stderr, "Could not allocate memory on host! (%s: %d)\n", __FILE__, __LINE__);
+                exit(1);
+            }
+
+            cl_context_properties cps[3] = {CL_CONTEXT_PLATFORM, (cl_context_properties)clPlatform, 0};
+            clContext = clCreateContextFromType(cps, deviceType, nullptr, nullptr, &ciErrNum);
+            OCL_ERRCK_VAR(ciErrNum);
+
+            cl_command_queue clCommandQueue = clCreateCommandQueue(clContext, clDevice, CL_QUEUE_PROFILING_ENABLE, &ciErrNum);
+            OCL_ERRCK_VAR(ciErrNum);
+
+            cl_uint workItemDimensions;
+            OCL_ERRCK_RETVAL(clGetDeviceInfo(clDevice, CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS, sizeof(cl_uint), &workItemDimensions, nullptr));
+
+            size_t workItemSizes[workItemDimensions];
+            OCL_ERRCK_RETVAL(clGetDeviceInfo(clDevice, CL_DEVICE_MAX_WORK_ITEM_SIZES, workItemDimensions * sizeof(size_t), workItemSizes, nullptr));
+
+            // Interface function to GPU implementation of gridding
+            OpenCL_interface(number_of_samples, params, samples, LUT, sizeLUT, gridData, sampleDensity, clContext, clCommandQueue, clDevice, workItemSizes);
+
+            if (params.useLUT)
+            {
+                free(LUT);
+            }
+
+            free(gridData);
+            free(sampleDensity);
+
+            double time = chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
+
+            cout << fixed << setprecision(10) << (float) time / 1000.0 << '\t'; // ms
         }
+        cout << '\n';
+
+        free(samples);
     }
-    //(passed) ? printf("Comparing GPU and Gold results... PASSED\n"):printf("Comparing GPU and Gold results... FAILED\n");
-
-    pb_SwitchToTimer(&timers, pb_TimerID_IO);
-
-    FILE *outfile;
-    if (!(outfile = fopen(prms->outFile, "w")))
-    {
-        printf("Cannot open output file!\n");
-    }
-    else
-    {
-        fwrite(&passed, sizeof(int), 1, outfile);
-        fclose(outfile);
-    }
-
-    pb_SwitchToTimer(&timers, pb_TimerID_NONE);
-
-    if (params.useLUT)
-    {
-        free(LUT);
-    }
-
-    /*
-    OCL_ERRCK_RETVAL ( clEnqueueUnmapMemObject(clCommandQueue, samplesPin, samples, 0, NULL, NULL) );
-    OCL_ERRCK_RETVAL ( clEnqueueUnmapMemObject(clCommandQueue, gridDataPin, gridData, 0, NULL, NULL) );
-    OCL_ERRCK_RETVAL ( clEnqueueUnmapMemObject(clCommandQueue, sampleDensityPin, sampleDensity, 0, NULL, NULL) );
-
-    clReleaseMemObject(samplesPin);
-    clReleaseMemObject(gridDataPin);
-    clReleaseMemObject(sampleDensityPin);
-    */
-
-    free(samples);
-    free(gridData);
-    free(sampleDensity);
-
-    free(gridData_gold);
-    free(sampleDensity_gold);
-
-    printf("\n");
-    pb_PrintTimerSet(&timers);
-    pb_FreeParameters(prms);
 
     return 0;
 }
