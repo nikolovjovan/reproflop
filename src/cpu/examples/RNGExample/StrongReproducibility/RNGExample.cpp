@@ -311,9 +311,11 @@ void run_sequential_reproducible()
 void generate_start_indices()
 {
     if (perf_test) {
-        int blk_size = (element_count + thread_count - 1) / thread_count;
-        for (int i = 0; i < thread_count; ++i) {
-            start_indices[i] = i * blk_size;
+        int blk_size = element_count / thread_count;
+        int remainder = element_count - thread_count * blk_size;
+        start_indices[0] = 0;
+        for (int i = 1; i < thread_count; ++i) {
+            start_indices[i] = start_indices[i - 1] + (blk_size + (i <= remainder ? 1 : 0));
         }
         return;
     }
